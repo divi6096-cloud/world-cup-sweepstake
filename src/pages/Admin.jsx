@@ -209,18 +209,23 @@ function Matches() {
       const allMatches = data.matches || []
       if (!allMatches.length) { setStatus('✗ No matches returned'); setPulling(false); return }
 
-      const { data: teams } = await supabase.from('teams').select('id, name, fifa_code')
-      const teamByCode = {}; const teamByName = {}
-      teams?.forEach(t => { teamByCode[t.fifa_code] = t.id; teamByName[t.name.toLowerCase()] = t.id })
-      const findTeam = (t) => teamByCode[t.tla] || teamByName[t.name?.toLowerCase()] || null
+      const { data: teams } = await supabase.from('teams').select('id, name, fifa_code, api_id')
+      const teamByCode = {}; const teamByName = {}; const teamByApiId = {}
+      teams?.forEach(t => {
+        teamByCode[t.fifa_code] = t.id
+        teamByName[t.name.toLowerCase()] = t.id
+        if (t.api_id) teamByApiId[t.api_id] = t.id
+      })
+      const findTeam = (t) => teamByApiId[t?.id] || teamByCode[t?.tla] || teamByName[t?.name?.toLowerCase()] || null
 
       const rows = []
+      let skipped = 0
       for (const m of allMatches) {
         const gwNum = apiStageToGW(m.stage, m.matchday)
         const gw = gameweeks.find(g => g.week_number === gwNum)
         const homeId = findTeam(m.homeTeam)
         const awayId = findTeam(m.awayTeam)
-        if (!homeId || !awayId) continue
+        if (!homeId || !awayId) { skipped++; continue }
         rows.push({
           gameweek_id: gw?.id || null,
           home_team_id: homeId,
@@ -233,10 +238,15 @@ function Matches() {
           api_match_id: m.id,
         })
       }
+      if (!rows.length) {
+        setStatus(`✗ 0 matches matched your teams (skipped ${skipped}). Run Sync Teams first so teams have api_id, or check team names match.`)
+        setPulling(false)
+        return
+      }
       const { error } = await supabase.from('matches').upsert(rows, { onConflict: 'api_match_id' })
       if (error) throw new Error(error.message)
       await load()
-      setStatus(`✓ ${rows.length} matches synced`)
+      setStatus(`✓ ${rows.length} matches synced${skipped ? ` · ${skipped} skipped (unmatched teams)` : ''}`)
     } catch(e) { setStatus(`✗ ${e.message}`) }
     setPulling(false)
   }
@@ -286,7 +296,7 @@ function Matches() {
             if (!g.scorer?.id || g.type === 'OWN_GOAL') continue
             const scorerTeamId = g.team?.id ? teamByApiId[g.team.id] : null
             if (!scorerTeamId) continue
-            const { data: player } = await supabase.from('players').select('id').eq('api_player_id', g.scorer.id).single()
+            const { data: player } = await supabase.from('players').select('id').eq('id', g.scorer.id).single()
             if (!player) continue
             const { data: match } = await supabase.from('matches').select('id').eq('api_match_id', m.id).single()
             if (!match) continue
@@ -416,13 +426,14 @@ function Players() {
         const squad = data.squad || []
         if (!squad.length) { errors.push(`${team.name} (no squad yet)`); continue }
         const rows = squad.map(p => ({
-          api_player_id: p.id,
+          id: p.id,                 // football-data integer ID = primary key (matches your schema)
           name: p.name,
           position: p.position || '—',
           team_id: team.id,
         }))
-        await supabase.from('players').upsert(rows, { onConflict: 'api_player_id' })
-        count += rows.length
+        const { error } = await supabase.from('players').upsert(rows, { onConflict: 'id' })
+        if (error) { errors.push(`${team.name} (${error.message})`); continue }
+        count += rows.length     // only count rows the DB actually accepted
       } catch(e) { errors.push(`${team.name} (${e.message})`) }
       if (i < teamsWithApiId.length - 1) await new Promise(r => setTimeout(r, 6500))
     }
