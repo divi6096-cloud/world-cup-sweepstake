@@ -513,7 +513,16 @@ function AdminPicks() {
     setPlayers(pl.data || [])
     setPtRows(pt.data || [])
     setSettings(s.data || null)
-    if (g.data?.length && !selectedGw) setSelectedGw(g.data[0].id)
+    const gw = selectedGw || (g.data?.length ? g.data[0].id : null)
+    if (gw && !selectedGw) setSelectedGw(gw)
+    // Load picks for the currently selected gameweek
+    if (gw) {
+      const { data: pk } = await supabase
+        .from('player_picks')
+        .select('participant_id, gameweek_id, player_id')
+        .eq('gameweek_id', gw)
+      setPicks(pk || [])
+    }
   }, [selectedGw])
   useEffect(() => { load() }, [load])
 
@@ -614,30 +623,37 @@ function Scoring() {
     setCalculating(true); setStatus('Loading data…')
     try {
       const [{ data: participants }, { data: gameweeks }, { data: ptRows }, { data: matches },
-             { data: playerStats }, { data: picks }, { data: settings }] = await Promise.all([
+             { data: playerStats }, { data: picks }, { data: players }, { data: settings }] = await Promise.all([
         supabase.from('participants').select('id, name, paid'),
         supabase.from('gameweeks').select('*'),
         supabase.from('participant_teams').select('participant_id, team_id, pool'),
         supabase.from('matches').select('*').eq('status','FINISHED'),
         supabase.from('player_stats').select('player_id, match_id, goals'),
         supabase.from('player_picks').select('participant_id, gameweek_id, player_id'),
+        supabase.from('players').select('id, team_id'),
         supabase.from('settings').select('*').eq('id', 1).single(),
       ])
 
       const s = settings || {}
       const pts = {
         group_win: parseFloat(s.points_group_win) || 2,
-        qualify:   parseFloat(s.points_qualify)   || 3,
         r16:       parseFloat(s.points_r16)        || 5,
         qf:        parseFloat(s.points_qf)         || 8,
         sf:        parseFloat(s.points_sf)         || 13,
         final:     parseFloat(s.points_final)      || 20,
         goal:      parseFloat(s.points_goal)       || 4,
+        draw:      parseFloat(s.points_draw)       || 1,
+        team_goal: parseFloat(s.points_team_goal)  || 1,
       }
       const mults = {
         A: parseFloat(s.team_a_multiplier)  || 1.5,
         B: parseFloat(s.pool_b_team_mult)   || 1.5,
         C: parseFloat(s.pool_c_team_mult)   || 2,
+      }
+      // Pool multiplier for a given team owned by a participant
+      const poolMultFor = (myTeams, teamId) => {
+        const owned = myTeams.find(r => r.team_id === teamId)
+        return owned ? (mults[owned.pool] || 1) : 1
       }
 
       const scoreRows = []
@@ -650,28 +666,45 @@ function Scoring() {
 
           let team_points = 0
           for (const m of gwMatches) {
-            const homeWin = m.home_score > m.away_score
-            const awayWin = m.away_score > m.home_score
             const stageMap = { group: pts.group_win, r16: pts.r16, qf: pts.qf, sf: pts.sf, final: pts.final }
             const stagePts = stageMap[m.stage] || pts.group_win
-            if (homeWin && myTeamIds.includes(m.home_team_id)) team_points += stagePts
-            if (awayWin && myTeamIds.includes(m.away_team_id)) team_points += stagePts
+            const hs = m.home_score ?? 0
+            const as = m.away_score ?? 0
+            const draw = hs === as
+            const ownsHome = myTeamIds.includes(m.home_team_id)
+            const ownsAway = myTeamIds.includes(m.away_team_id)
+
+            // Home team owned
+            if (ownsHome) {
+              const mult = poolMultFor(myTeams, m.home_team_id)
+              let raw = 0
+              if (draw) raw += pts.draw
+              else if (hs > as) raw += stagePts
+              raw += hs * pts.team_goal           // points per goal scored
+              team_points += raw * mult
+            }
+            // Away team owned
+            if (ownsAway) {
+              const mult = poolMultFor(myTeams, m.away_team_id)
+              let raw = 0
+              if (draw) raw += pts.draw
+              else if (as > hs) raw += stagePts
+              raw += as * pts.team_goal
+              team_points += raw * mult
+            }
           }
 
           let player_points = 0
           if (pick) {
-            const goalRows = playerStats.filter(ps => ps.player_id === pick.player_id)
             const myMatchIds = gwMatches.map(m => m.id)
-            const gwGoals = goalRows.filter(ps => myMatchIds.includes(ps.match_id))
-            const totalGoals = gwGoals.reduce((a, b) => a + (b.goals || 0), 0)
-            const mult = (() => {
-              const pt = myTeams.find(r => {
-                const pl = pick.player_id
-                return true
-              })
-              return 1
-            })()
-            player_points = totalGoals * pts.goal * mult
+            const gwGoals = playerStats
+              .filter(ps => ps.player_id === pick.player_id && myMatchIds.includes(ps.match_id))
+              .reduce((a, b) => a + (b.goals || 0), 0)
+            // Multiplier based on the pool of the picked player's team (if owned)
+            const player = players.find(pl => pl.id === pick.player_id)
+            const playerTeamId = player?.team_id
+            const mult = playerTeamId ? poolMultFor(myTeams, playerTeamId) : 1
+            player_points = gwGoals * pts.goal * mult
           }
 
           const total = team_points + player_points
@@ -803,6 +836,10 @@ function Settings() {
       {field('Quarter-Final', 'points_qf', 'number')}
       {field('Semi-Final', 'points_sf', 'number')}
       {field('Final / 3rd Place', 'points_final', 'number')}
+
+      <h3 style={sh3}>Other Scoring</h3>
+      {field('Draw (per owned team)', 'points_draw', 'number')}
+      {field('Team Goal (per goal scored)', 'points_team_goal', 'number')}
       {field('Goal (player pick)', 'points_goal', 'number')}
 
       <h3 style={sh3}>Team Pool Multipliers</h3>
