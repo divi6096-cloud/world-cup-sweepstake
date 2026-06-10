@@ -534,11 +534,11 @@ function AdminPicks() {
     if (!player) return 1
     const pt = ptRows.filter(r => r.participant_id === participantId)
     const match = pt.find(r => r.team_id === player.team_id)
-    if (!match) return 1
+    if (!match) return 1   // picked player is not on one of your teams → 1×
     const pool = match.pool
-    if (pool === 'A') return parseFloat(settings.team_a_multiplier) || 1.5
-    if (pool === 'B') return parseFloat(settings.pool_b_team_mult) || 1.5
-    if (pool === 'C') return parseFloat(settings.pool_c_team_mult) || 2
+    if (pool === 'A') return parseFloat(settings.pick_a_multiplier) || 1
+    if (pool === 'B') return parseFloat(settings.pick_b_multiplier) || 2
+    if (pool === 'C') return parseFloat(settings.pick_c_multiplier) || 3
     return 1
   }
 
@@ -551,6 +551,18 @@ function AdminPicks() {
     )
     if (error) { setStatus(`✗ ${error.message}`); setSaving(false); return }
     setStatus('✓ Pick saved'); setEditPid(null); setSearch('')
+    load()
+  }
+
+  async function removePick(participantId) {
+    if (!selectedGw) return
+    setSaving(true); setStatus('')
+    const { error } = await supabase.from('player_picks')
+      .delete()
+      .eq('participant_id', participantId)
+      .eq('gameweek_id', selectedGw)
+    if (error) { setStatus(`✗ ${error.message}`); setSaving(false); return }
+    setStatus('✓ Pick removed'); setEditPid(null); setSearch('')
     load()
   }
 
@@ -581,28 +593,49 @@ function AdminPicks() {
                 <td style={std}>{p.knockout_swap_used ? '⚡ Used' : '—'}</td>
                 <td style={std}>
                   {editPid === p.id ? (
-                    <span style={{ display:'flex', gap:6, alignItems:'center', flexWrap:'wrap' }}>
-                      <input placeholder="Search player…" value={search} onChange={e=>setSearch(e.target.value)}
-                        style={{ ...sinput, width:160 }} autoFocus />
-                      <div style={{ display:'flex', flexDirection:'column', gap:2, maxHeight:160, overflowY:'auto', background:'#fff', border:'1px solid #e5e7eb', borderRadius:6, padding:4 }}>
-                        {filteredPlayers.slice(0,20).map(pl => {
-                          const m = getMultiplier(p.id, pl.id)
-                          return (
-                            <button key={pl.id} onClick={()=>savePick(p.id, pl.id)} disabled={saving}
-                              style={{ display:'flex', justifyContent:'space-between', gap:12, padding:'4px 8px', border:'none', background:'none', cursor:'pointer', fontSize:13, textAlign:'left' }}>
-                              <span>{pl.name} <span style={{ color:C.muted, fontSize:11 }}>{pl.teams?.name}</span></span>
-                              {m > 1 && <span style={{ color:'#16a34a', fontWeight:700, fontSize:11 }}>{m}×</span>}
-                            </button>
-                          )
-                        })}
+                    <span style={{ display:'flex', gap:6, alignItems:'flex-start', flexWrap:'wrap' }}>
+                      <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+                        <input placeholder="Type 2+ letters to search…" value={search} onChange={e=>setSearch(e.target.value)}
+                          style={{ ...sinput, width:200 }} autoFocus />
+                        {search.length >= 2 ? (
+                          <div style={{ display:'flex', flexDirection:'column', gap:2, maxHeight:220, overflowY:'auto', background:'#fff', border:'1px solid #e5e7eb', borderRadius:6, padding:4, width:280 }}>
+                            {filteredPlayers.length === 0 ? (
+                              <span style={{ padding:'6px 8px', color:C.muted, fontSize:13 }}>No players found</span>
+                            ) : (
+                              filteredPlayers.slice(0,50).map(pl => {
+                                const m = getMultiplier(p.id, pl.id)
+                                return (
+                                  <button key={pl.id} onClick={()=>savePick(p.id, pl.id)} disabled={saving}
+                                    style={{ display:'flex', justifyContent:'space-between', gap:12, padding:'5px 8px', border:'none', background:'none', cursor:'pointer', fontSize:13, textAlign:'left' }}>
+                                    <span>{pl.name} <span style={{ color:C.muted, fontSize:11 }}>{pl.teams?.name}</span></span>
+                                    {m > 1 && <span style={{ color:'#16a34a', fontWeight:700, fontSize:11 }}>{m}×</span>}
+                                  </button>
+                                )
+                              })
+                            )}
+                            {filteredPlayers.length > 50 && (
+                              <span style={{ padding:'4px 8px', color:C.muted, fontSize:11 }}>Showing first 50 — keep typing to narrow</span>
+                            )}
+                          </div>
+                        ) : (
+                          <span style={{ fontSize:12, color:C.muted }}>Start typing a player name</span>
+                        )}
                       </div>
-                      <button onClick={()=>{ setEditPid(null); setSearch('') }} style={{ background:'none', border:'none', cursor:'pointer', color:C.muted, fontSize:13 }}>✕</button>
+                      <button onClick={()=>{ setEditPid(null); setSearch('') }} style={{ background:'none', border:'none', cursor:'pointer', color:C.muted, fontSize:13 }}>✕ Cancel</button>
                     </span>
                   ) : (
-                    <button onClick={()=>{ setEditPid(p.id); setSearch('') }}
-                      style={{ background:'none', border:'1px solid #d1d5db', borderRadius:6, padding:'3px 10px', cursor:'pointer', fontSize:13 }}>
-                      Set
-                    </button>
+                    <span style={{ display:'flex', gap:6, alignItems:'center' }}>
+                      <button onClick={()=>{ setEditPid(p.id); setSearch('') }}
+                        style={{ background:'none', border:'1px solid #d1d5db', borderRadius:6, padding:'3px 10px', cursor:'pointer', fontSize:13 }}>
+                        {pick ? 'Replace' : 'Set'}
+                      </button>
+                      {pick && (
+                        <button onClick={()=>removePick(p.id)} disabled={saving}
+                          style={{ background:'none', border:'1px solid #fca5a5', color:'#dc2626', borderRadius:6, padding:'3px 10px', cursor:'pointer', fontSize:13 }}>
+                          Remove
+                        </button>
+                      )}
+                    </span>
                   )}
                 </td>
               </tr>
@@ -650,10 +683,21 @@ function Scoring() {
         B: parseFloat(s.pool_b_team_mult)   || 1.5,
         C: parseFloat(s.pool_c_team_mult)   || 2,
       }
-      // Pool multiplier for a given team owned by a participant
+      // Separate multipliers for player picks (default: own A=1, own B=2, own C=3)
+      const pickMults = {
+        A: parseFloat(s.pick_a_multiplier) || 1,
+        B: parseFloat(s.pick_b_multiplier) || 2,
+        C: parseFloat(s.pick_c_multiplier) || 3,
+      }
+      // Team-point multiplier for a given owned team
       const poolMultFor = (myTeams, teamId) => {
         const owned = myTeams.find(r => r.team_id === teamId)
         return owned ? (mults[owned.pool] || 1) : 1
+      }
+      // Player-pick multiplier: only boosted if the picked player is on one of YOUR teams
+      const pickMultFor = (myTeams, teamId) => {
+        const owned = myTeams.find(r => r.team_id === teamId)
+        return owned ? (pickMults[owned.pool] || 1) : 1
       }
 
       const scoreRows = []
@@ -700,10 +744,10 @@ function Scoring() {
             const gwGoals = playerStats
               .filter(ps => ps.player_id === pick.player_id && myMatchIds.includes(ps.match_id))
               .reduce((a, b) => a + (b.goals || 0), 0)
-            // Multiplier based on the pool of the picked player's team (if owned)
+            // Pick multiplier: boosted only if the picked player is on one of your teams
             const player = players.find(pl => pl.id === pick.player_id)
             const playerTeamId = player?.team_id
-            const mult = playerTeamId ? poolMultFor(myTeams, playerTeamId) : 1
+            const mult = playerTeamId ? pickMultFor(myTeams, playerTeamId) : 1
             player_points = gwGoals * pts.goal * mult
           }
 
@@ -842,10 +886,15 @@ function Settings() {
       {field('Team Goal (per goal scored)', 'points_team_goal', 'number')}
       {field('Goal (player pick)', 'points_goal', 'number')}
 
-      <h3 style={sh3}>Team Pool Multipliers</h3>
+      <h3 style={sh3}>Team Point Multipliers (by pool)</h3>
       {field('Pool A multiplier', 'team_a_multiplier', 'number')}
       {field('Pool B multiplier', 'pool_b_team_mult', 'number')}
       {field('Pool C multiplier', 'pool_c_team_mult', 'number')}
+
+      <h3 style={sh3}>Player Pick Multipliers (by your team's pool)</h3>
+      {field('Pick from your Pool A team', 'pick_a_multiplier', 'number')}
+      {field('Pick from your Pool B team', 'pick_b_multiplier', 'number')}
+      {field('Pick from your Pool C team', 'pick_c_multiplier', 'number')}
 
       <button onClick={save} disabled={saving} style={{ ...sbtn, marginTop:8 }}>
         {saving ? 'Saving…' : 'Save Settings'}
