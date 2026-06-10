@@ -227,10 +227,17 @@ function Matches() {
         const awayId = findTeam(m.awayTeam)
         if (!homeId || !awayId) { skipped++; continue }
         rows.push({
+          // Text columns the public app reads:
+          gameweek: gwNum,
+          home_team: m.homeTeam?.name || m.homeTeam?.shortName || '—',
+          away_team: m.awayTeam?.name || m.awayTeam?.shortName || '—',
+          kickoff: m.utcDate,
+          // UUID/id columns (used by scoring):
           gameweek_id: gw?.id || null,
           home_team_id: homeId,
           away_team_id: awayId,
           match_date: m.utcDate,
+          // Shared:
           stage: STAGE_MAP[m.stage] || 'group',
           home_score: m.score?.fullTime?.home ?? null,
           away_score: m.score?.fullTime?.away ?? null,
@@ -278,6 +285,10 @@ function Matches() {
 
         await supabase.from('matches').upsert({
           api_match_id: m.id,
+          gameweek: gwNum,
+          home_team: m.homeTeam?.name || m.homeTeam?.shortName || '—',
+          away_team: m.awayTeam?.name || m.awayTeam?.shortName || '—',
+          kickoff: m.utcDate,
           gameweek_id: gw?.id || null,
           home_team_id: homeId,
           away_team_id: awayId,
