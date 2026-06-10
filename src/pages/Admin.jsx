@@ -194,9 +194,10 @@ function Matches() {
 
   const load = async () => {
     const [m, g] = await Promise.all([
-      supabase.from('matches').select('*, home_team:teams!matches_home_team_id_fkey(name), away_team:teams!matches_away_team_id_fkey(name), gameweeks(label)').order('match_date'),
+      supabase.from('matches').select('*').order('match_date'),
       supabase.from('gameweeks').select('*').order('week_number'),
     ])
+    if (m.error) console.error('matches load error:', m.error.message)
     setMatches(m.data || [])
     setGameweeks(g.data || [])
   }
@@ -349,7 +350,7 @@ function Matches() {
           {matches.map((m,i) => (
             <tr key={m.id} style={{ background:i%2===0?'#fff':'#f9fafb' }}>
               <td style={std}>{m.match_date ? new Date(m.match_date).toLocaleDateString() : '—'}</td>
-              <td style={std}>{m.home_team?.name} vs {m.away_team?.name}</td>
+              <td style={std}>{m.home_team || '—'} vs {m.away_team || '—'}</td>
               <td style={std}>
                 {editId === m.id ? (
                   <span style={{ display:'flex', gap:4, alignItems:'center' }}>
@@ -364,7 +365,7 @@ function Matches() {
                 )}
               </td>
               <td style={std}>{m.stage}</td>
-              <td style={std}>{m.gameweeks?.label || '—'}</td>
+              <td style={std}>{gameweeks.find(g => g.id === m.gameweek_id)?.label || m.stage || '—'}</td>
               <td style={std}>
                 <button onClick={()=>{ setEditId(m.id); setEditScore({ home: m.home_score??'', away: m.away_score??'' }) }}
                   style={{ background:'none', border:'none', color:'#1d4ed8', cursor:'pointer', fontSize:13 }}>Edit</button>
