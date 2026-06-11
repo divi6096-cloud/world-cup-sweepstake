@@ -390,7 +390,7 @@ function Players() {
   const load = async () => {
     const [t, p] = await Promise.all([
       supabase.from('teams').select('*').order('name'),
-      supabase.from('players').select('*, teams(name)').order('name'),
+      supabase.from('players').select('*, teams(name)').order('name').limit(5000),
     ])
     setTeams(t.data || [])
     setPlayers(p.data || [])
@@ -504,7 +504,7 @@ function AdminPicks() {
     const [p, g, pl, pt, s] = await Promise.all([
       supabase.from('participants').select('id, name, knockout_swap_used').order('name'),
       supabase.from('gameweeks').select('*').order('week_number'),
-      supabase.from('players').select('id, name, team_id, teams(name)').order('name'),
+      supabase.from('players').select('id, name, team_id, teams(name)').order('name').limit(5000),
       supabase.from('participant_teams').select('participant_id, team_id, pool'),
       supabase.from('settings').select('*').eq('id', 1).single(),
     ])
@@ -551,6 +551,7 @@ function AdminPicks() {
     )
     if (error) { setStatus(`✗ ${error.message}`); setSaving(false); return }
     setStatus('✓ Pick saved'); setEditPid(null); setSearch('')
+    setSaving(false)
     load()
   }
 
@@ -563,6 +564,7 @@ function AdminPicks() {
       .eq('gameweek_id', selectedGw)
     if (error) { setStatus(`✗ ${error.message}`); setSaving(false); return }
     setStatus('✓ Pick removed'); setEditPid(null); setSearch('')
+    setSaving(false)
     load()
   }
 
@@ -663,7 +665,7 @@ function Scoring() {
         supabase.from('matches').select('*').eq('status','FINISHED'),
         supabase.from('player_stats').select('player_id, match_id, goals'),
         supabase.from('player_picks').select('participant_id, gameweek_id, player_id'),
-        supabase.from('players').select('id, team_id'),
+        supabase.from('players').select('id, team_id').limit(5000),
         supabase.from('settings').select('*').eq('id', 1).single(),
       ])
 
