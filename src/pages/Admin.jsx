@@ -36,6 +36,23 @@ async function callAPI(endpoint) {
   return json
 }
 
+// Fetch ALL rows from a Supabase query, paging past the server max-rows cap (default 1000).
+// buildQuery receives the supabase table builder and should apply select/order/filters,
+// returning the query (without range). We page in 1000-row chunks until exhausted.
+async function fetchAll(buildQuery, pageSize = 1000) {
+  let from = 0
+  let all = []
+  while (true) {
+    const { data, error } = await buildQuery().range(from, from + pageSize - 1)
+    if (error) { console.error('fetchAll error:', error.message); break }
+    if (!data || data.length === 0) break
+    all = all.concat(data)
+    if (data.length < pageSize) break   // last page
+    from += pageSize
+  }
+  return all
+}
+
 // ── Participants ────────────────────────────────────────────────────────────────
 function Participants() {
   const [rows, setRows] = useState([])
@@ -260,9 +277,19 @@ function Matches() {
   async function fullSync() {
     setSyncing(true); setStatus('Full sync: fetching matches + scorers…')
     try {
-      const data = await callAPI('competitions/WC/matches?season=2026&status=FINISHED')
-      const finished = data.matches || []
-      setStatus(`Syncing ${finished.length} finished matches…`)
+      // Fetch ALL matches, then process any that have a result (finished or in-play with scores)
+      const data = await callAPI('competitions/WC/matches?season=2026')
+      const allMatches = data.matches || []
+      const withResults = allMatches.filter(m =>
+        m.status === 'FINISHED' || m.status === 'IN_PLAY' || m.status === 'PAUSED' ||
+        (m.score?.fullTime?.home != null && m.score?.fullTime?.away != null)
+      )
+      setStatus(`Found ${withResults.length} matches with results (of ${allMatches.length} total)…`)
+      if (!withResults.length) {
+        setStatus(`✗ No finished/in-play matches returned by the API yet. (${allMatches.length} fixtures exist but none have results.)`)
+        setSyncing(false)
+        return
+      }
 
       const { data: teams } = await supabase.from('teams').select('id, name, fifa_code, api_id')
       const teamByCode = {}; const teamByName = {}; const teamByApiId = {}
@@ -273,16 +300,19 @@ function Matches() {
       })
       const findTeam = (t) => teamByApiId[t.id] || teamByCode[t.tla] || teamByName[t.name?.toLowerCase()] || null
 
+      let updated = 0, scorerRows = 0, errors = 0
+      const finished = withResults
+
       for (let i = 0; i < finished.length; i++) {
         const m = finished[i]
-        setStatus(`Syncing match ${i+1}/${finished.length}: ${m.homeTeam?.name} vs ${m.awayTeam?.name}`)
+        setStatus(`Syncing ${i+1}/${finished.length}: ${m.homeTeam?.name} vs ${m.awayTeam?.name}`)
         const homeId = findTeam(m.homeTeam); const awayId = findTeam(m.awayTeam)
         if (!homeId || !awayId) continue
 
         const gwNum = apiStageToGW(m.stage, m.matchday)
         const gw = (await supabase.from('gameweeks').select('id').eq('week_number', gwNum).single()).data
 
-        await supabase.from('matches').upsert({
+        const { error: upErr } = await supabase.from('matches').upsert({
           api_match_id: m.id,
           home_team: m.homeTeam?.name || m.homeTeam?.shortName || '—',
           away_team: m.awayTeam?.name || m.awayTeam?.shortName || '—',
@@ -295,24 +325,32 @@ function Matches() {
           away_score: m.score?.fullTime?.away ?? null,
           status: m.status,
         }, { onConflict: 'api_match_id' })
+        if (upErr) { errors++; continue }
+        updated++
 
-        // Sync scorers
+        // Get our match row id once (not per goal)
+        const { data: matchRow } = await supabase.from('matches').select('id').eq('api_match_id', m.id).single()
+
+        // Sync scorers — tally goals per player in this match
         try {
           const detail = await callAPI(`matches/${m.id}`)
           const goals = detail.goals || []
+          const goalCount = {}   // player_id -> goals in this match
           for (const g of goals) {
             if (!g.scorer?.id || g.type === 'OWN_GOAL') continue
-            const scorerTeamId = g.team?.id ? teamByApiId[g.team.id] : null
-            if (!scorerTeamId) continue
-            const { data: player } = await supabase.from('players').select('id').eq('id', g.scorer.id).single()
-            if (!player) continue
-            const { data: match } = await supabase.from('matches').select('id').eq('api_match_id', m.id).single()
-            if (!match) continue
-            await supabase.from('player_stats').upsert({
-              player_id: player.id,
-              match_id: match.id,
-              goals: 1,
-            }, { onConflict: 'player_id,match_id' })
+            goalCount[g.scorer.id] = (goalCount[g.scorer.id] || 0) + 1
+          }
+          if (matchRow) {
+            for (const [scorerId, count] of Object.entries(goalCount)) {
+              const { data: player } = await supabase.from('players').select('id').eq('id', scorerId).single()
+              if (!player) continue
+              const { error: psErr } = await supabase.from('player_stats').upsert({
+                player_id: player.id,
+                match_id: matchRow.id,
+                goals: count,
+              }, { onConflict: 'player_id,match_id' })
+              if (!psErr) scorerRows++
+            }
           }
         } catch(_) {}
 
@@ -320,7 +358,7 @@ function Matches() {
       }
 
       await load()
-      setStatus(`✓ Full sync complete — ${finished.length} matches processed`)
+      setStatus(`✓ Full sync complete — ${updated} matches updated, ${scorerRows} scorer entries${errors ? `, ${errors} errors` : ''}.`)
     } catch(e) { setStatus(`✗ ${e.message}`) }
     setSyncing(false)
   }
@@ -390,10 +428,10 @@ function Players() {
   const load = async () => {
     const [t, p] = await Promise.all([
       supabase.from('teams').select('*').order('name'),
-      supabase.from('players').select('*, teams(name)').order('name').limit(5000),
+      fetchAll(() => supabase.from('players').select('*, teams(name)').order('name')),
     ])
     setTeams(t.data || [])
-    setPlayers(p.data || [])
+    setPlayers(p || [])
   }
   useEffect(() => { load() }, [])
 
@@ -504,13 +542,13 @@ function AdminPicks() {
     const [p, g, pl, pt, s] = await Promise.all([
       supabase.from('participants').select('id, name, knockout_swap_used').order('name'),
       supabase.from('gameweeks').select('*').order('week_number'),
-      supabase.from('players').select('id, name, team_id, teams(name)').order('name').limit(5000),
+      fetchAll(() => supabase.from('players').select('id, name, team_id, teams(name)').order('name')),
       supabase.from('participant_teams').select('participant_id, team_id, pool'),
       supabase.from('settings').select('*').eq('id', 1).single(),
     ])
     setParticipants(p.data || [])
     setGameweeks(g.data || [])
-    setPlayers(pl.data || [])
+    setPlayers(pl || [])
     setPtRows(pt.data || [])
     setSettings(s.data || null)
     const gw = selectedGw || (g.data?.length ? g.data[0].id : null)
@@ -657,21 +695,25 @@ function Scoring() {
   async function calculateAll() {
     setCalculating(true); setStatus('Loading data…')
     try {
+      const players = await fetchAll(() => supabase.from('players').select('id, team_id'))
+      const playerStats = await fetchAll(() => supabase.from('player_stats').select('player_id, match_id, goals'))
       const [{ data: participants }, { data: gameweeks }, { data: ptRows }, { data: matches },
-             { data: playerStats }, { data: picks }, { data: players }, { data: settings }] = await Promise.all([
+             { data: picks }, { data: settings }] = await Promise.all([
         supabase.from('participants').select('id, name, paid'),
         supabase.from('gameweeks').select('*'),
         supabase.from('participant_teams').select('participant_id, team_id, pool'),
-        supabase.from('matches').select('*').eq('status','FINISHED'),
-        supabase.from('player_stats').select('player_id, match_id, goals'),
+        supabase.from('matches').select('*').not('home_score', 'is', null),
         supabase.from('player_picks').select('participant_id, gameweek_id, player_id'),
-        supabase.from('players').select('id, team_id').limit(5000),
         supabase.from('settings').select('*').eq('id', 1).single(),
       ])
+      // Map match_id -> match (for attributing player goals by date)
+      const matchById = {}
+      ;(matches || []).forEach(m => { matchById[m.id] = m })
 
       const s = settings || {}
       const pts = {
         group_win: parseFloat(s.points_group_win) || 2,
+        r32:       parseFloat(s.points_r32)        || 3,
         r16:       parseFloat(s.points_r16)        || 5,
         qf:        parseFloat(s.points_qf)         || 8,
         sf:        parseFloat(s.points_sf)         || 13,
@@ -705,14 +747,23 @@ function Scoring() {
       const scoreRows = []
       for (const p of participants) {
         for (const gw of gameweeks) {
-          const gwMatches = matches.filter(m => m.gameweek_id === gw.id)
+          // Match a fixture to this gameweek by DATE WINDOW (robust — no dependency on gameweek_id)
+          const gwStart = gw.starts_at ? new Date(gw.starts_at) : null
+          const gwEnd = gw.ends_at ? new Date(gw.ends_at) : null
+          const inWindow = (m) => {
+            if (m.gameweek_id && m.gameweek_id === gw.id) return true   // honour explicit tag if present
+            if (!gwStart || !gwEnd || !m.match_date) return false
+            const d = new Date(m.match_date)
+            return d >= gwStart && d <= gwEnd
+          }
+          const gwMatches = matches.filter(inWindow)
           const myTeams = ptRows.filter(r => r.participant_id === p.id)
           const myTeamIds = myTeams.map(r => r.team_id)
           const pick = picks.find(pk => pk.participant_id === p.id && pk.gameweek_id === gw.id)
 
           let team_points = 0
           for (const m of gwMatches) {
-            const stageMap = { group: pts.group_win, r16: pts.r16, qf: pts.qf, sf: pts.sf, final: pts.final }
+            const stageMap = { group: pts.group_win, r32: pts.r32, r16: pts.r16, qf: pts.qf, sf: pts.sf, final: pts.final }
             const stagePts = stageMap[m.stage] || pts.group_win
             const hs = m.home_score ?? 0
             const as = m.away_score ?? 0
@@ -726,7 +777,7 @@ function Scoring() {
               let raw = 0
               if (draw) raw += pts.draw
               else if (hs > as) raw += stagePts
-              raw += hs * pts.team_goal           // points per goal scored
+              raw += hs * pts.team_goal
               team_points += raw * mult
             }
             // Away team owned
@@ -742,11 +793,11 @@ function Scoring() {
 
           let player_points = 0
           if (pick) {
-            const myMatchIds = gwMatches.map(m => m.id)
+            // Credit the picked player's goals scored in matches that fall in THIS gameweek's window
+            const gwMatchIds = new Set(gwMatches.map(m => m.id))
             const gwGoals = playerStats
-              .filter(ps => ps.player_id === pick.player_id && myMatchIds.includes(ps.match_id))
+              .filter(ps => ps.player_id === pick.player_id && gwMatchIds.has(ps.match_id))
               .reduce((a, b) => a + (b.goals || 0), 0)
-            // Pick multiplier: boosted only if the picked player is on one of your teams
             const player = players.find(pl => pl.id === pick.player_id)
             const playerTeamId = player?.team_id
             const mult = playerTeamId ? pickMultFor(myTeams, playerTeamId) : 1
