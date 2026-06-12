@@ -328,37 +328,31 @@ function Matches() {
         if (upErr) { errors++; continue }
         updated++
 
-        // Get our match row id once (not per goal)
-        const { data: matchRow } = await supabase.from('matches').select('id').eq('api_match_id', m.id).single()
-
-        // Sync scorers — tally goals per player in this match
-        try {
-          const detail = await callAPI(`matches/${m.id}`)
-          const goals = detail.goals || []
-          const goalCount = {}   // player_id -> goals in this match
-          for (const g of goals) {
-            if (!g.scorer?.id || g.type === 'OWN_GOAL') continue
-            goalCount[g.scorer.id] = (goalCount[g.scorer.id] || 0) + 1
-          }
-          if (matchRow) {
-            for (const [scorerId, count] of Object.entries(goalCount)) {
-              const { data: player } = await supabase.from('players').select('id').eq('id', scorerId).single()
-              if (!player) continue
-              const { error: psErr } = await supabase.from('player_stats').upsert({
-                player_id: player.id,
-                match_id: matchRow.id,
-                goals: count,
-              }, { onConflict: 'player_id,match_id' })
-              if (!psErr) scorerRows++
-            }
-          }
-        } catch(_) {}
-
         if (i < finished.length - 1) await new Promise(r => setTimeout(r, 700))
       }
 
+      // ── Scorers: one free call to the competition scorers endpoint ──
+      // (the per-match goals array is gated on the free plan; this isn't)
+      setStatus(`Matches updated. Fetching goalscorers…`)
+      try {
+        const scData = await callAPI('competitions/WC/scorers?limit=200')
+        const scorers = scData.scorers || []
+        for (const sc of scorers) {
+          const pid = sc.player?.id
+          const goals = sc.goals ?? 0
+          if (!pid) continue
+          const { error: gErr } = await supabase.from('players').update({ total_goals: goals }).eq('id', pid)
+          if (!gErr) scorerRows++
+        }
+      } catch (e) {
+        setStatus(`✓ ${updated} matches updated, but scorers fetch failed: ${e.message}`)
+        setSyncing(false)
+        await load()
+        return
+      }
+
       await load()
-      setStatus(`✓ Full sync complete — ${updated} matches updated, ${scorerRows} scorer entries${errors ? `, ${errors} errors` : ''}.`)
+      setStatus(`✓ Full sync complete — ${updated} matches updated, ${scorerRows} scorers updated${errors ? `, ${errors} errors` : ''}.`)
     } catch(e) { setStatus(`✗ ${e.message}`) }
     setSyncing(false)
   }
@@ -695,8 +689,7 @@ function Scoring() {
   async function calculateAll() {
     setCalculating(true); setStatus('Loading data…')
     try {
-      const players = await fetchAll(() => supabase.from('players').select('id, team_id'))
-      const playerStats = await fetchAll(() => supabase.from('player_stats').select('player_id, match_id, goals'))
+      const players = await fetchAll(() => supabase.from('players').select('id, team_id, total_goals'))
       const [{ data: participants }, { data: gameweeks }, { data: ptRows }, { data: matches },
              { data: picks }, { data: settings }] = await Promise.all([
         supabase.from('participants').select('id, name, paid'),
@@ -744,8 +737,22 @@ function Scoring() {
         return owned ? (pickMults[owned.pool] || 1) : 1
       }
 
+      // Active pick per participant = the pick on the latest gameweek (by week_number).
+      // Since the free API gives cumulative goal totals (not per-match), we credit the
+      // picked player's TOTAL tournament goals once, to the active pick's gameweek.
+      const gwOrder = {}
+      gameweeks.forEach(g => { gwOrder[g.id] = g.week_number || 0 })
+      const activePickByP = {}
+      for (const pk of picks) {
+        const cur = activePickByP[pk.participant_id]
+        if (!cur || (gwOrder[pk.gameweek_id] || 0) > (gwOrder[cur.gameweek_id] || 0)) {
+          activePickByP[pk.participant_id] = pk
+        }
+      }
+
       const scoreRows = []
       for (const p of participants) {
+        const activePick = activePickByP[p.id]
         for (const gw of gameweeks) {
           // Match a fixture to this gameweek by DATE WINDOW (robust — no dependency on gameweek_id)
           const gwStart = gw.starts_at ? new Date(gw.starts_at) : null
@@ -791,17 +798,15 @@ function Scoring() {
             }
           }
 
+          // Player points: credit the active pick's player's TOTAL goals once,
+          // on the active pick's gameweek (cumulative data → count once, not per gameweek)
           let player_points = 0
-          if (pick) {
-            // Credit the picked player's goals scored in matches that fall in THIS gameweek's window
-            const gwMatchIds = new Set(gwMatches.map(m => m.id))
-            const gwGoals = playerStats
-              .filter(ps => ps.player_id === pick.player_id && gwMatchIds.has(ps.match_id))
-              .reduce((a, b) => a + (b.goals || 0), 0)
-            const player = players.find(pl => pl.id === pick.player_id)
+          if (activePick && activePick.gameweek_id === gw.id) {
+            const player = players.find(pl => pl.id === activePick.player_id)
+            const goals = player?.total_goals || 0
             const playerTeamId = player?.team_id
             const mult = playerTeamId ? pickMultFor(myTeams, playerTeamId) : 1
-            player_points = gwGoals * pts.goal * mult
+            player_points = goals * pts.goal * mult
           }
 
           const total = team_points + player_points
@@ -830,7 +835,7 @@ function Scoring() {
       <h2 style={sh2}>Scoring</h2>
       <p style={{ color:C.muted, fontSize:14, marginBottom:20 }}>
         Run this after each matchday to recalculate the leaderboard. It reads all finished matches,
-        player goals from player_stats, and picks from player_picks.
+        player goals from the scorers sync, and picks from player_picks.
       </p>
       <button onClick={calculateAll} disabled={calculating} style={{ ...sbtn, padding:'12px 28px', fontSize:15 }}>
         {calculating ? 'Calculating…' : '🏆 Calculate All Scores'}
