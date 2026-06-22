@@ -10,7 +10,8 @@ const C = {
 }
 const S = {
   card:{background:C.white,borderRadius:12,boxShadow:'0 1px 3px rgba(0,0,0,0.08)',overflow:'hidden'},
-  table:{width:'100%',borderCollapse:'collapse',fontSize:14},
+  cardScroll:{background:C.white,borderRadius:12,boxShadow:'0 1px 3px rgba(0,0,0,0.08)',overflowX:'auto',WebkitOverflowScrolling:'touch'},
+  table:{width:'100%',borderCollapse:'collapse',fontSize:14,minWidth:340},
   th:{padding:'10px 16px',textAlign:'left',background:'#f8fafc',color:C.muted,fontFamily:"'Barlow Condensed', sans-serif",fontWeight:600,fontSize:13,letterSpacing:'0.06em',textTransform:'uppercase',borderBottom:`2px solid ${C.border}`},
   td:{padding:'13px 16px',borderBottom:`1px solid ${C.border}`,verticalAlign:'middle',color:'#111827',fontFamily:"'Outfit', sans-serif"},
   badge:{display:'inline-block',padding:'3px 10px',borderRadius:99,fontSize:12,fontWeight:600,fontFamily:"'Outfit', sans-serif"},
@@ -22,6 +23,44 @@ function EmptyState({ icon, message }) { return <div style={S.empty}><div style=
 function Spinner() { return <div style={S.loading}>Loading…</div> }
 
 const REFRESH_INTERVAL = 30000
+
+// Responsive styles injected once — handles mobile layout without rewriting every inline style
+const RESPONSIVE_CSS = `
+  * { -webkit-tap-highlight-color: transparent; }
+  .tbl-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .tab-nav { display: flex; gap: 4px; margin-top: 20px; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+  .tab-nav::-webkit-scrollbar { display: none; }
+  .tab-nav button { white-space: nowrap; flex-shrink: 0; }
+  @media (max-width: 640px) {
+    .pub-main { padding: 16px 12px 40px !important; }
+    .pub-head { padding: 18px 12px 0 !important; }
+    .tab-nav button { padding: 9px 13px !important; }
+    table { font-size: 13px !important; }
+    th, td { padding: 10px 10px !important; }
+    .filter-row { flex-wrap: wrap; }
+  }
+  @media (max-width: 400px) {
+    th, td { padding: 9px 7px !important; }
+    table { font-size: 12px !important; }
+  }
+`
+function ResponsiveStyles() {
+  useEffect(() => {
+    const tag = document.createElement('style')
+    tag.textContent = RESPONSIVE_CSS
+    document.head.appendChild(tag)
+    // ensure viewport meta exists for proper mobile scaling
+    let vp = document.querySelector('meta[name="viewport"]')
+    if (!vp) {
+      vp = document.createElement('meta')
+      vp.name = 'viewport'
+      document.head.appendChild(vp)
+    }
+    vp.content = 'width=device-width, initial-scale=1, viewport-fit=cover'
+    return () => { tag.remove() }
+  }, [])
+  return null
+}
 
 // ── Leaderboard ────────────────────────────────────────────────────────────────
 function Leaderboard() {
@@ -88,7 +127,7 @@ function Leaderboard() {
         </div>
       </div>
 
-      <div style={S.card}>
+      <div style={S.cardScroll}>
         <table style={S.table}>
           <thead>
             <tr>
@@ -144,7 +183,7 @@ function TeamOwnership() {
   if (!rows.length) return <EmptyState icon="🌍" message="No team assignments yet. Teams will appear after the draw." />
   const poolColors = { A:C.poolA, B:C.poolB, C:C.poolC }
   return (
-    <div style={S.card}>
+    <div style={S.cardScroll}>
       <table style={S.table}>
         <thead><tr><th style={S.th}>Participant</th><th style={S.th}>Status</th><th style={S.th}>Pool A</th><th style={S.th}>Pool B</th><th style={S.th}>Pool C</th></tr></thead>
         <tbody>
@@ -204,7 +243,7 @@ function WeeklyPicks() {
       <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:16 }}>
         {Object.keys(picks).map(gwId => { const active=gwId===activeGw; return <button key={gwId} onClick={()=>setActiveGw(gwId)} style={{ padding:'8px 18px', borderRadius:8, border:`1.5px solid ${active?C.green:C.border}`, background:active?C.green:C.white, color:active?C.white:C.muted, fontFamily:"'Barlow Condensed', sans-serif", fontWeight:600, fontSize:14, letterSpacing:'0.04em', cursor:'pointer' }}>GW {gwMeta[gwId]??gwId.slice(0,6)}</button> })}
       </div>
-      <div style={S.card}>
+      <div style={S.cardScroll}>
         <table style={S.table}>
           <thead><tr><th style={S.th}>Participant</th><th style={S.th}>Player</th><th style={S.th}>Position</th><th style={S.th}>Team</th></tr></thead>
           <tbody>
@@ -277,7 +316,7 @@ function Fixtures() {
 
   return (
     <div>
-      <div style={{ display:'flex', gap:8, marginBottom:16 }}>
+      <div className="filter-row" style={{ display:'flex', gap:8, marginBottom:16 }}>
         {filterBtn('all','All')}{filterBtn('results','Results')}{filterBtn('upcoming','Upcoming')}
       </div>
       {stages.map(st => (
@@ -285,7 +324,7 @@ function Fixtures() {
           <div style={{ fontFamily:"'Barlow Condensed', sans-serif", fontWeight:700, fontSize:15, color:C.green, letterSpacing:'0.08em', textTransform:'uppercase', marginBottom:8 }}>
             {STAGE_LABEL[st] || st}
           </div>
-          <div style={S.card}>
+          <div style={S.cardScroll}>
             <table style={S.table}>
               <tbody>
                 {byStage[st].map((m,i) => {
@@ -360,7 +399,7 @@ function Goalscorers() {
 
   const podium = ['#e8b84b','#9ca3af','#cd7f32']
   return (
-    <div style={S.card}>
+    <div style={S.cardScroll}>
       <table style={S.table}>
         <thead>
           <tr>
@@ -404,25 +443,28 @@ export default function Public() {
   }, [])
   return (
     <div style={{ minHeight:'100vh', background:C.cream }}>
+      <ResponsiveStyles />
       <header style={{ background:C.dark, paddingBottom:0 }}>
-        <div style={{ maxWidth:960, margin:'0 auto', padding:'28px 20px 0' }}>
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+        <div className="pub-head" style={{ maxWidth:960, margin:'0 auto', padding:'28px 20px 0' }}>
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:10, flexWrap:'wrap' }}>
             <div style={{ display:'flex', alignItems:'center', gap:14, marginBottom:4 }}>
               <span style={{ fontSize:28 }}>⚽</span>
               <div>
-                <h1 style={{ margin:0, fontFamily:"'Barlow Condensed', sans-serif", fontWeight:800, fontSize:'clamp(22px, 5vw, 32px)', color:C.white, lineHeight:1.1 }}>World Cup Sweepstake</h1>
-                <p style={{ margin:0, fontFamily:"'Outfit', sans-serif", fontSize:13, color:'#6ee7b7', letterSpacing:'0.05em', textTransform:'uppercase' }}>The Rift WC 2026</p>
+                <h1 style={{ margin:0, fontFamily:"'Barlow Condensed', sans-serif", fontWeight:800, fontSize:'clamp(20px, 5vw, 32px)', color:C.white, lineHeight:1.1 }}>World Cup Sweepstake</h1>
+                <p style={{ margin:0, fontFamily:"'Outfit', sans-serif", fontSize:12, color:'#6ee7b7', letterSpacing:'0.05em', textTransform:'uppercase' }}>The Rift WC 2026</p>
               </div>
             </div>
-            <Link to="/admin" style={{ fontFamily:"'Outfit', sans-serif", fontSize:12, color:'rgba(255,255,255,0.35)', textDecoration:'none' }}>Admin</Link>
-            <Link to="/picks" style={{ fontFamily:"'Outfit', sans-serif", fontSize:13, color:'rgba(255,255,255,0.7)', textDecoration:'none', background:'rgba(255,255,255,0.1)', padding:'6px 14px', borderRadius:20 }}>⚽ My Pick</Link>
+            <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+              <Link to="/admin" style={{ fontFamily:"'Outfit', sans-serif", fontSize:12, color:'rgba(255,255,255,0.35)', textDecoration:'none' }}>Admin</Link>
+              <Link to="/picks" style={{ fontFamily:"'Outfit', sans-serif", fontSize:13, color:'rgba(255,255,255,0.7)', textDecoration:'none', background:'rgba(255,255,255,0.1)', padding:'6px 14px', borderRadius:20, whiteSpace:'nowrap' }}>⚽ My Pick</Link>
+            </div>
           </div>
-          <nav style={{ display:'flex', gap:4, marginTop:20 }}>
+          <nav className="tab-nav">
             {TABS.map((t,i) => { const active=tab===i; return <button key={t.label} onClick={()=>setTab(i)} style={{ padding:'10px 18px', border:'none', borderRadius:'8px 8px 0 0', background:active?C.cream:'transparent', color:active?C.dark:'rgba(255,255,255,0.55)', fontFamily:"'Barlow Condensed', sans-serif", fontWeight:700, fontSize:'clamp(13px, 2vw, 15px)', letterSpacing:'0.06em', textTransform:'uppercase', cursor:'pointer', display:'flex', alignItems:'center', gap:6 }}><span>{t.icon}</span> {t.label}</button> })}
           </nav>
         </div>
       </header>
-      <main style={{ maxWidth:960, margin:'0 auto', padding:'24px 20px 48px' }}>
+      <main className="pub-main" style={{ maxWidth:960, margin:'0 auto', padding:'24px 20px 48px' }}>
         {tab===0&&<Leaderboard/>}{tab===1&&<Fixtures/>}{tab===2&&<Goalscorers/>}{tab===3&&<TeamOwnership/>}{tab===4&&<WeeklyPicks/>}
       </main>
     </div>

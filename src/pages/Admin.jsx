@@ -30,7 +30,7 @@ const ADMIN_TABS = [
 ]
 
 async function callAPI(endpoint) {
-  const res = await fetch(`/.netlify/functions/football-api?endpoint=${encodeURIComponent(endpoint)}`)
+  const res = await fetch(`/football-api?endpoint=${encodeURIComponent(endpoint)}`)
   const json = await res.json()
   if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`)
   return json
@@ -108,7 +108,7 @@ function Participants() {
         {paid_count} paid · {rows.length - paid_count} free · Pot: R{pot.toLocaleString()}
       </div>
       {loading ? <p style={{ color:C.muted }}>Loading…</p> : (
-        <table style={stable}>
+        <div className="adm-table-wrap"><table style={stable}>
           <thead><tr>
             {['Name','Paid','Swap Used',''].map(h => <th key={h} style={sth}>{h}</th>)}
           </tr></thead>
@@ -132,7 +132,7 @@ function Participants() {
               </tr>
             ))}
           </tbody>
-        </table>
+        </table></div>
       )}
     </div>
   )
@@ -181,7 +181,7 @@ function Gameweeks() {
         <button onClick={save} style={sbtn}>Add</button>
         {status && <span style={{ fontSize:13, color:status.startsWith('✓')?'#16a34a':'#dc2626' }}>{status}</span>}
       </div>
-      <table style={stable}>
+      <div className="adm-table-wrap"><table style={stable}>
         <thead><tr>{['#','Label','Starts','Ends',''].map(h=><th key={h} style={sth}>{h}</th>)}</tr></thead>
         <tbody>
           {rows.map((r,i)=>(
@@ -194,7 +194,7 @@ function Gameweeks() {
             </tr>
           ))}
         </tbody>
-      </table>
+      </table></div>
     </div>
   )
 }
@@ -376,7 +376,7 @@ function Matches() {
         </button>
       </div>
       {status && <div style={{ marginBottom:12, fontSize:13, color:status.startsWith('✓')?'#16a34a':status.startsWith('✗')?'#dc2626':'#374151' }}>{status}</div>}
-      <table style={stable}>
+      <div className="adm-table-wrap"><table style={stable}>
         <thead><tr>{['Date','Match','Score','Stage','GW','Edit'].map(h=><th key={h} style={sth}>{h}</th>)}</tr></thead>
         <tbody>
           {matches.map((m,i) => (
@@ -405,7 +405,7 @@ function Matches() {
             </tr>
           ))}
         </tbody>
-      </table>
+      </table></div>
     </div>
   )
 }
@@ -502,7 +502,7 @@ function Players() {
       {pullTeamsStatus && <div style={{ fontSize:13, color:pullTeamsStatus.startsWith('✓')?'#16a34a':'#374151', marginBottom:6 }}>{pullTeamsStatus}</div>}
       {pullPlayersStatus && <div style={{ fontSize:13, color:pullPlayersStatus.startsWith('✓')?'#16a34a':'#374151', whiteSpace:'pre-line', marginBottom:12 }}>{pullPlayersStatus}</div>}
       <p style={{ fontSize:13, color:C.muted, marginBottom:12 }}>{players.length} players across {teams.length} teams</p>
-      <table style={stable}>
+      <div className="adm-table-wrap"><table style={stable}>
         <thead><tr>{['Name','Team','Position'].map(h=><th key={h} style={sth}>{h}</th>)}</tr></thead>
         <tbody>
           {players.map((p,i)=>(
@@ -513,7 +513,7 @@ function Players() {
             </tr>
           ))}
         </tbody>
-      </table>
+      </table></div>
     </div>
   )
 }
@@ -613,7 +613,7 @@ function AdminPicks() {
         </select>
         {status && <span style={{ fontSize:13, color:status.startsWith('✓')?'#16a34a':'#dc2626' }}>{status}</span>}
       </div>
-      <table style={stable}>
+      <div className="adm-table-wrap"><table style={stable}>
         <thead><tr>{['Participant','Current Pick','Mult','Swap Used','Action'].map(h=><th key={h} style={sth}>{h}</th>)}</tr></thead>
         <tbody>
           {participants.map((p,i) => {
@@ -632,7 +632,7 @@ function AdminPicks() {
                         <input placeholder="Type 2+ letters to search…" value={search} onChange={e=>setSearch(e.target.value)}
                           style={{ ...sinput, width:200 }} autoFocus />
                         {search.length >= 2 ? (
-                          <div style={{ display:'flex', flexDirection:'column', gap:2, maxHeight:220, overflowY:'auto', background:'#fff', border:'1px solid #e5e7eb', borderRadius:6, padding:4, width:280 }}>
+                          <div style={{ display:'flex', flexDirection:'column', gap:2, maxHeight:220, overflowY:'auto', background:'#fff', border:'1px solid #e5e7eb', borderRadius:6, padding:4, width:'min(280px, 80vw)' }}>
                             {filteredPlayers.length === 0 ? (
                               <span style={{ padding:'6px 8px', color:C.muted, fontSize:13 }}>No players found</span>
                             ) : (
@@ -676,7 +676,7 @@ function AdminPicks() {
             )
           })}
         </tbody>
-      </table>
+      </table></div>
     </div>
   )
 }
@@ -965,7 +965,7 @@ function Settings() {
 // ── Shared styles ────────────────────────────────────────────────────────────
 const sh2 = { fontFamily:"'Barlow Condensed', sans-serif", fontSize:22, fontWeight:700, color:C.dark, marginBottom:20, letterSpacing:'0.02em' }
 const sh3 = { fontFamily:"'Barlow Condensed', sans-serif", fontSize:16, fontWeight:700, color:C.green, marginBottom:10, marginTop:22, borderBottom:`1px solid ${C.border}`, paddingBottom:6 }
-const stable = { width:'100%', borderCollapse:'collapse', fontSize:14 }
+const stable = { width:'100%', borderCollapse:'collapse', fontSize:14, minWidth:480 }
 const sth = { textAlign:'left', padding:'8px 12px', background:'#1a4a20', color:'#fff', fontWeight:700, fontSize:12, textTransform:'uppercase', letterSpacing:'0.05em' }
 const std = { padding:'9px 12px', borderBottom:'1px solid #f1f5f9', verticalAlign:'middle' }
 const sinput = { padding:'8px 12px', border:'1px solid #d1d5db', borderRadius:7, fontSize:14, fontFamily:'inherit', outline:'none', minWidth:120 }
@@ -1005,19 +1005,43 @@ function PasswordGate({ children }) {
 export default function Admin() {
   const [tab, setTab] = useState('participants')
 
+  useEffect(() => {
+    const css = `
+      * { -webkit-tap-highlight-color: transparent; }
+      .adm-nav { scrollbar-width: none; }
+      .adm-nav::-webkit-scrollbar { display: none; }
+      .adm-nav button { white-space: nowrap; flex-shrink: 0; }
+      .adm-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+      @media (max-width: 640px) {
+        .adm-main { padding: 16px 12px 40px !important; }
+        .adm-head { padding: 0 12px !important; }
+        table { font-size: 13px !important; }
+        .adm-grid { grid-template-columns: 1fr !important; }
+        input, select { font-size: 16px !important; }  /* prevents iOS zoom-on-focus */
+      }
+    `
+    const tag = document.createElement('style')
+    tag.textContent = css
+    document.head.appendChild(tag)
+    let vp = document.querySelector('meta[name="viewport"]')
+    if (!vp) { vp = document.createElement('meta'); vp.name = 'viewport'; document.head.appendChild(vp) }
+    vp.content = 'width=device-width, initial-scale=1, viewport-fit=cover'
+    return () => { tag.remove() }
+  }, [])
+
   return (
     <PasswordGate>
       <div style={{ minHeight:'100vh', background:'#f8fafc', fontFamily:"'Outfit', sans-serif" }}>
         <header style={{ background:C.dark, padding:'0 20px', position:'sticky', top:0, zIndex:50, boxShadow:'0 2px 12px rgba(0,0,0,0.4)' }}>
-          <div style={{ maxWidth:1100, margin:'0 auto', display:'flex', alignItems:'center', justifyContent:'space-between', gap:12, flexWrap:'wrap' }}>
+          <div className="adm-head" style={{ maxWidth:1100, margin:'0 auto', display:'flex', alignItems:'center', justifyContent:'space-between', gap:12, flexWrap:'wrap' }}>
             <div style={{ display:'flex', alignItems:'center', gap:10, padding:'12px 0' }}>
               <span style={{ fontSize:22 }}>⚙️</span>
               <span style={{ fontFamily:"'Barlow Condensed', sans-serif", fontWeight:700, fontSize:20, color:C.gold, letterSpacing:'0.04em' }}>THE RIFT · ADMIN</span>
             </div>
             <Link to="/" style={{ fontSize:13, color:'rgba(255,255,255,0.55)', textDecoration:'none' }}>← Public site</Link>
           </div>
-          <div style={{ maxWidth:1100, margin:'0 auto' }}>
-            <nav style={{ display:'flex', gap:2, overflowX:'auto', paddingBottom:0 }}>
+          <div className="adm-head" style={{ maxWidth:1100, margin:'0 auto' }}>
+            <nav className="adm-nav" style={{ display:'flex', gap:2, overflowX:'auto', paddingBottom:0 }}>
               {ADMIN_TABS.map(t => {
                 const active = tab === t.id
                 return (
@@ -1035,7 +1059,7 @@ export default function Admin() {
             </nav>
           </div>
         </header>
-        <main style={{ maxWidth:1100, margin:'0 auto', padding:'24px 20px 48px' }}>
+        <main className="adm-main" style={{ maxWidth:1100, margin:'0 auto', padding:'24px 20px 48px' }}>
           {tab==='participants' && <Participants />}
           {tab==='gameweeks'    && <Gameweeks />}
           {tab==='matches'      && <Matches />}
