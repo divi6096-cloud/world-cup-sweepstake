@@ -607,14 +607,37 @@ function AdminPicks() {
   async function savePick(participantId, playerId) {
     if (!selectedGw || !playerId) return
     setSaving(true); setStatus('')
+    // Snapshot the new player's current cumulative goals — they earn goals scored from here on
+    const { data: pl } = await supabase.from('players').select('total_goals').eq('id', playerId).single()
+    const goalsAtPick = pl?.total_goals || 0
+
+    // Freeze any EARLIER active pick (different, earlier gameweek) so the old player's goals
+    // stop accruing at their current total — the old pick keeps what it had, no more.
+    const selWeek = gwWeekNumber(selectedGw)
+    for (const ek of picks) {
+      if (ek.participant_id !== participantId) continue
+      if (ek.gameweek_id === selectedGw) continue
+      if (gwWeekNumber(ek.gameweek_id) >= selWeek) continue   // only freeze earlier picks
+      if (ek.goals_at_end != null) continue                    // already frozen
+      const { data: oldPl } = await supabase.from('players').select('total_goals').eq('id', ek.player_id).single()
+      await supabase.from('player_picks').update({ goals_at_end: oldPl?.total_goals || 0 })
+        .eq('participant_id', participantId).eq('gameweek_id', ek.gameweek_id)
+    }
+
     const { error } = await supabase.from('player_picks').upsert(
-      { participant_id: participantId, gameweek_id: selectedGw, player_id: playerId },
+      { participant_id: participantId, gameweek_id: selectedGw, player_id: playerId, goals_at_pick: goalsAtPick, goals_at_end: null },
       { onConflict: 'participant_id,gameweek_id' }
     )
     if (error) { setStatus(`✗ ${error.message}`); setSaving(false); return }
-    setStatus('✓ Pick saved'); setEditPid(null); setSearch('')
+    setStatus(`✓ Pick saved (earns goals beyond ${goalsAtPick})`); setEditPid(null); setSearch('')
     setSaving(false)
     load()
+  }
+
+  // helper: week_number for a gameweek id (from loaded gameweeks)
+  function gwWeekNumber(gwId) {
+    const g = gameweeks.find(x => x.id === gwId)
+    return g?.week_number || 0
   }
 
   async function removePick(participantId) {
@@ -726,7 +749,7 @@ function Scoring() {
         supabase.from('gameweeks').select('*'),
         supabase.from('participant_teams').select('participant_id, team_id, pool'),
         supabase.from('matches').select('*').not('home_score', 'is', null),
-        supabase.from('player_picks').select('participant_id, gameweek_id, player_id'),
+        supabase.from('player_picks').select('participant_id, gameweek_id, player_id, goals_at_pick, goals_at_end'),
         supabase.from('settings').select('*').eq('id', 1).single(),
       ])
       // Map match_id -> match (for attributing player goals by date)
@@ -767,22 +790,36 @@ function Scoring() {
         return owned ? (pickMults[owned.pool] || 1) : 1
       }
 
-      // Active pick per participant = the pick on the latest gameweek (by week_number).
-      // Since the free API gives cumulative goal totals (not per-match), we credit the
-      // picked player's TOTAL tournament goals once, to the active pick's gameweek.
+      // Player points with fair switching:
+      // each pick earns its player's goals scored AFTER the pick's snapshot (goals_at_pick),
+      // capped at goals_at_end if the pick was later replaced (so the old pick keeps only what
+      // it had at the switch; the new pick earns everything beyond its own snapshot).
       const gwOrder = {}
       gameweeks.forEach(g => { gwOrder[g.id] = g.week_number || 0 })
-      const activePickByP = {}
-      for (const pk of picks) {
-        const cur = activePickByP[pk.participant_id]
-        if (!cur || (gwOrder[pk.gameweek_id] || 0) > (gwOrder[cur.gameweek_id] || 0)) {
-          activePickByP[pk.participant_id] = pk
+      const playerPointsByP = {}
+      const latestGwByP = {}
+      for (const p of participants) {
+        const myPicks = picks.filter(pk => pk.participant_id === p.id)
+        const myTeams = ptRows.filter(r => r.participant_id === p.id)
+        let total = 0
+        for (const pk of myPicks) {
+          const player = players.find(pl => pl.id === pk.player_id)
+          if (!player) continue
+          const startSnap = pk.goals_at_pick || 0
+          const endTotal = (pk.goals_at_end != null) ? pk.goals_at_end : (player.total_goals || 0)
+          const goalsEarned = Math.max(0, endTotal - startSnap)
+          const mult = pickMultFor(myTeams, player.team_id)
+          total += goalsEarned * pts.goal * mult
+          const wk = gwOrder[pk.gameweek_id] || 0
+          if (latestGwByP[p.id] == null || wk >= (gwOrder[latestGwByP[p.id]] || 0)) {
+            latestGwByP[p.id] = pk.gameweek_id
+          }
         }
+        playerPointsByP[p.id] = total
       }
 
       const scoreRows = []
       for (const p of participants) {
-        const activePick = activePickByP[p.id]
         for (const gw of gameweeks) {
           // Match a fixture to this gameweek by DATE WINDOW (robust — no dependency on gameweek_id)
           const gwStart = gw.starts_at ? new Date(gw.starts_at) : null
@@ -828,15 +865,11 @@ function Scoring() {
             }
           }
 
-          // Player points: credit the active pick's player's TOTAL goals once,
-          // on the active pick's gameweek (cumulative data → count once, not per gameweek)
+          // Player points: computed once across all picks (snapshot/freeze model above);
+          // attribute the whole amount to the participant's latest pick gameweek.
           let player_points = 0
-          if (activePick && activePick.gameweek_id === gw.id) {
-            const player = players.find(pl => pl.id === activePick.player_id)
-            const goals = player?.total_goals || 0
-            const playerTeamId = player?.team_id
-            const mult = playerTeamId ? pickMultFor(myTeams, playerTeamId) : 1
-            player_points = goals * pts.goal * mult
+          if (latestGwByP[p.id] === gw.id) {
+            player_points = playerPointsByP[p.id] || 0
           }
 
           const total = team_points + player_points
