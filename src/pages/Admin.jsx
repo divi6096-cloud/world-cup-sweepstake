@@ -598,14 +598,23 @@ function AdminPicks() {
   async function savePick(participantId, playerId) {
     if (!playerId) return
     setSaving(true); setStatus('')
-    // Snapshot the NEW player's current cumulative goals — they earn goals scored from here on
-    const { data: pl } = await supabase.from('players').select('total_goals').eq('id', playerId).single()
-    const goalsAtPick = pl?.total_goals || 0
 
-    // If there's an existing live pick for this person, archive it to history (frozen at
-    // the OLD player's current goals) so the old pick keeps what it had, no more.
     const existing = picks.find(pk => pk.participant_id === participantId)
-    if (existing && existing.player_id !== playerId) {
+    const isSwitch = existing && existing.player_id !== playerId
+
+    // Snapshot logic:
+    //  - INITIAL pick (no existing pick, or re-selecting same/before any switch): snapshot = 0,
+    //    so the player earns ALL their tournament goals (incl. ones already scored).
+    //  - SWITCH (replacing a different existing player): snapshot = new player's CURRENT total,
+    //    so the new player only earns goals from the switch forward.
+    let goalsAtPick = 0
+    if (isSwitch) {
+      const { data: pl } = await supabase.from('players').select('total_goals').eq('id', playerId).single()
+      goalsAtPick = pl?.total_goals || 0
+    }
+
+    // On a switch, archive the OLD pick frozen at the old player's current goals
+    if (isSwitch) {
       const { data: oldPl } = await supabase.from('players').select('total_goals').eq('id', existing.player_id).single()
       await supabase.from('player_pick_history').insert({
         participant_id: participantId,
@@ -613,7 +622,6 @@ function AdminPicks() {
         goals_at_pick: existing.goals_at_pick || 0,
         goals_at_end: oldPl?.total_goals || 0,
       })
-      // mark swap used
       await supabase.from('participants').update({ knockout_swap_used: true }).eq('id', participantId)
     }
 
@@ -623,7 +631,10 @@ function AdminPicks() {
       { onConflict: 'participant_id' }
     )
     if (error) { setStatus(`✗ ${error.message}`); setSaving(false); return }
-    setStatus(`✓ Pick saved (earns goals beyond ${goalsAtPick})`); setEditPid(null); setSearch('')
+    setStatus(isSwitch
+      ? `✓ Switched — new player earns goals beyond ${goalsAtPick}`
+      : `✓ Pick saved — earns all tournament goals`)
+    setEditPid(null); setSearch('')
     setSaving(false)
     load()
   }
