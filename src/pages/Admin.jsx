@@ -274,22 +274,36 @@ function Matches() {
     setPulling(false)
   }
 
-  async function fullSync() {
-    setSyncing(true); setStatus('Full sync: fetching matches + scorers…')
+  async function fullSync(recentOnly = false) {
+    setSyncing(true)
+    setStatus(recentOnly ? 'Quick sync: fetching recent matches…' : 'Full sync: fetching matches + scorers…')
     try {
-      // Fetch ALL matches, then process any that have a result (finished or in-play with scores)
-      const data = await callAPI('competitions/WC/matches?season=2026')
+      // Build the matches query. Recent mode limits to the last 3 days via the API's date filter.
+      let endpoint = 'competitions/WC/matches?season=2026'
+      if (recentOnly) {
+        const d = new Date()
+        const to = d.toISOString().slice(0, 10)
+        const fromDate = new Date(d.getTime() - 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+        endpoint += `&dateFrom=${fromDate}&dateTo=${to}`
+      }
+      const data = await callAPI(endpoint)
       const allMatches = data.matches || []
       const withResults = allMatches.filter(m =>
         m.status === 'FINISHED' || m.status === 'IN_PLAY' || m.status === 'PAUSED' ||
         (m.score?.fullTime?.home != null && m.score?.fullTime?.away != null)
       )
-      setStatus(`Found ${withResults.length} matches with results (of ${allMatches.length} total)…`)
+      setStatus(`Found ${withResults.length} matches with results (of ${allMatches.length} ${recentOnly ? 'recent' : 'total'})…`)
       if (!withResults.length) {
-        setStatus(`✗ No finished/in-play matches returned by the API yet. (${allMatches.length} fixtures exist but none have results.)`)
+        setStatus(`✗ No ${recentOnly ? 'recent ' : ''}matches with results returned. (${allMatches.length} fixtures in range.)`)
         setSyncing(false)
         return
       }
+
+      // Load what we already have, to skip matches that are unchanged
+      const { data: existingMatches } = await supabase
+        .from('matches').select('api_match_id, home_score, away_score, status')
+      const existingByApi = {}
+      ;(existingMatches || []).forEach(m => { existingByApi[m.api_match_id] = m })
 
       const { data: teams } = await supabase.from('teams').select('id, name, fifa_code, api_id')
       const teamByCode = {}; const teamByName = {}; const teamByApiId = {}
@@ -300,11 +314,20 @@ function Matches() {
       })
       const findTeam = (t) => teamByApiId[t.id] || teamByCode[t.tla] || teamByName[t.name?.toLowerCase()] || null
 
-      let updated = 0, scorerRows = 0, errors = 0
+      let updated = 0, scorerRows = 0, errors = 0, skipped = 0
       const finished = withResults
 
       for (let i = 0; i < finished.length; i++) {
         const m = finished[i]
+        const newHome = m.score?.fullTime?.home ?? null
+        const newAway = m.score?.fullTime?.away ?? null
+        // Skip if we already have this match FINISHED with the same score (nothing to update)
+        const ex = existingByApi[m.id]
+        if (ex && ex.status === 'FINISHED' && m.status === 'FINISHED'
+            && ex.home_score === newHome && ex.away_score === newAway) {
+          skipped++
+          continue
+        }
         setStatus(`Syncing ${i+1}/${finished.length}: ${m.homeTeam?.name} vs ${m.awayTeam?.name}`)
         const homeId = findTeam(m.homeTeam); const awayId = findTeam(m.awayTeam)
         if (!homeId || !awayId) continue
@@ -321,8 +344,8 @@ function Matches() {
           away_team_id: awayId,
           match_date: m.utcDate,
           stage: STAGE_MAP[m.stage] || 'group',
-          home_score: m.score?.fullTime?.home ?? null,
-          away_score: m.score?.fullTime?.away ?? null,
+          home_score: newHome,
+          away_score: newAway,
           status: m.status,
         }, { onConflict: 'api_match_id' })
         if (upErr) { errors++; continue }
@@ -352,7 +375,7 @@ function Matches() {
       }
 
       await load()
-      setStatus(`✓ Full sync complete — ${updated} matches updated, ${scorerRows} scorers updated${errors ? `, ${errors} errors` : ''}.`)
+      setStatus(`✓ ${recentOnly ? 'Quick' : 'Full'} sync complete — ${updated} updated, ${skipped} unchanged (skipped), ${scorerRows} scorers${errors ? `, ${errors} errors` : ''}.`)
     } catch(e) { setStatus(`✗ ${e.message}`) }
     setSyncing(false)
   }
@@ -371,9 +394,16 @@ function Matches() {
         <button onClick={pullMatches} disabled={pulling} style={sbtn}>
           {pulling ? 'Fetching…' : '📥 Sync Fixtures'}
         </button>
-        <button onClick={fullSync} disabled={syncing} style={{ ...sbtn, background:'#16a34a' }}>
-          {syncing ? 'Syncing…' : '🔄 Full Sync (Results + Scorers)'}
+        <button onClick={() => fullSync(true)} disabled={syncing} style={{ ...sbtn, background:'#0ea5e9' }}>
+          {syncing ? 'Syncing…' : '⚡ Quick Sync (recent)'}
         </button>
+        <button onClick={() => fullSync(false)} disabled={syncing} style={{ ...sbtn, background:'#16a34a' }}>
+          {syncing ? 'Syncing…' : '🔄 Full Sync (all results)'}
+        </button>
+      </div>
+      <div style={{ marginBottom:12, fontSize:12, color:'#6b7280' }}>
+        ⚡ Quick Sync only checks the last 3 days and skips matches already final — use this for routine updates.
+        🔄 Full Sync re-checks every match — use occasionally or to backfill.
       </div>
       {status && <div style={{ marginBottom:12, fontSize:13, color:status.startsWith('✓')?'#16a34a':status.startsWith('✗')?'#dc2626':'#374151' }}>{status}</div>}
       <div className="adm-table-wrap"><table style={stable}>
