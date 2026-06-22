@@ -551,41 +551,32 @@ function Players() {
 // ── Admin Picks ────────────────────────────────────────────────────────────────
 function AdminPicks() {
   const [participants, setParticipants] = useState([])
-  const [gameweeks, setGameweeks] = useState([])
   const [players, setPlayers] = useState([])
   const [ptRows, setPtRows] = useState([])
-  const [picks, setPicks] = useState([])
+  const [picks, setPicks] = useState([])        // one live pick per participant
+  const [history, setHistory] = useState([])    // superseded (frozen) picks
   const [settings, setSettings] = useState(null)
-  const [selectedGw, setSelectedGw] = useState(null)
   const [editPid, setEditPid] = useState(null)
   const [search, setSearch] = useState('')
   const [saving, setSaving] = useState(false)
   const [status, setStatus] = useState('')
 
   const load = useCallback(async () => {
-    const [p, g, pl, pt, s] = await Promise.all([
+    const [p, pl, pt, s, pk, hist] = await Promise.all([
       supabase.from('participants').select('id, name, knockout_swap_used').order('name'),
-      supabase.from('gameweeks').select('*').order('week_number'),
-      fetchAll(() => supabase.from('players').select('id, name, team_id, teams(name)').order('name')),
+      fetchAll(() => supabase.from('players').select('id, name, team_id, total_goals, teams(name)').order('name')),
       supabase.from('participant_teams').select('participant_id, team_id, pool'),
       supabase.from('settings').select('*').eq('id', 1).single(),
+      supabase.from('player_picks').select('participant_id, player_id, goals_at_pick'),
+      supabase.from('player_pick_history').select('participant_id, player_id, goals_at_pick, goals_at_end'),
     ])
     setParticipants(p.data || [])
-    setGameweeks(g.data || [])
     setPlayers(pl || [])
     setPtRows(pt.data || [])
     setSettings(s.data || null)
-    const gw = selectedGw || (g.data?.length ? g.data[0].id : null)
-    if (gw && !selectedGw) setSelectedGw(gw)
-    // Load picks for the currently selected gameweek
-    if (gw) {
-      const { data: pk } = await supabase
-        .from('player_picks')
-        .select('participant_id, gameweek_id, player_id')
-        .eq('gameweek_id', gw)
-      setPicks(pk || [])
-    }
-  }, [selectedGw])
+    setPicks(pk.data || [])
+    setHistory(hist.data || [])
+  }, [])
   useEffect(() => { load() }, [load])
 
   const filteredPlayers = players.filter(p => p.name.toLowerCase().includes(search.toLowerCase()))
@@ -605,28 +596,31 @@ function AdminPicks() {
   }
 
   async function savePick(participantId, playerId) {
-    if (!selectedGw || !playerId) return
+    if (!playerId) return
     setSaving(true); setStatus('')
-    // Snapshot the new player's current cumulative goals — they earn goals scored from here on
+    // Snapshot the NEW player's current cumulative goals — they earn goals scored from here on
     const { data: pl } = await supabase.from('players').select('total_goals').eq('id', playerId).single()
     const goalsAtPick = pl?.total_goals || 0
 
-    // Freeze any EARLIER active pick (different, earlier gameweek) so the old player's goals
-    // stop accruing at their current total — the old pick keeps what it had, no more.
-    const selWeek = gwWeekNumber(selectedGw)
-    for (const ek of picks) {
-      if (ek.participant_id !== participantId) continue
-      if (ek.gameweek_id === selectedGw) continue
-      if (gwWeekNumber(ek.gameweek_id) >= selWeek) continue   // only freeze earlier picks
-      if (ek.goals_at_end != null) continue                    // already frozen
-      const { data: oldPl } = await supabase.from('players').select('total_goals').eq('id', ek.player_id).single()
-      await supabase.from('player_picks').update({ goals_at_end: oldPl?.total_goals || 0 })
-        .eq('participant_id', participantId).eq('gameweek_id', ek.gameweek_id)
+    // If there's an existing live pick for this person, archive it to history (frozen at
+    // the OLD player's current goals) so the old pick keeps what it had, no more.
+    const existing = picks.find(pk => pk.participant_id === participantId)
+    if (existing && existing.player_id !== playerId) {
+      const { data: oldPl } = await supabase.from('players').select('total_goals').eq('id', existing.player_id).single()
+      await supabase.from('player_pick_history').insert({
+        participant_id: participantId,
+        player_id: existing.player_id,
+        goals_at_pick: existing.goals_at_pick || 0,
+        goals_at_end: oldPl?.total_goals || 0,
+      })
+      // mark swap used
+      await supabase.from('participants').update({ knockout_swap_used: true }).eq('id', participantId)
     }
 
+    // Upsert the live pick (one row per participant)
     const { error } = await supabase.from('player_picks').upsert(
-      { participant_id: participantId, gameweek_id: selectedGw, player_id: playerId, goals_at_pick: goalsAtPick, goals_at_end: null },
-      { onConflict: 'participant_id,gameweek_id' }
+      { participant_id: participantId, player_id: playerId, goals_at_pick: goalsAtPick },
+      { onConflict: 'participant_id' }
     )
     if (error) { setStatus(`✗ ${error.message}`); setSaving(false); return }
     setStatus(`✓ Pick saved (earns goals beyond ${goalsAtPick})`); setEditPid(null); setSearch('')
@@ -634,50 +628,46 @@ function AdminPicks() {
     load()
   }
 
-  // helper: week_number for a gameweek id (from loaded gameweeks)
-  function gwWeekNumber(gwId) {
-    const g = gameweeks.find(x => x.id === gwId)
-    return g?.week_number || 0
-  }
-
   async function removePick(participantId) {
-    if (!selectedGw) return
     setSaving(true); setStatus('')
     const { error } = await supabase.from('player_picks')
       .delete()
       .eq('participant_id', participantId)
-      .eq('gameweek_id', selectedGw)
     if (error) { setStatus(`✗ ${error.message}`); setSaving(false); return }
     setStatus('✓ Pick removed'); setEditPid(null); setSearch('')
     setSaving(false)
     load()
   }
 
-  const pickMap = {}
-  picks.forEach(pk => { pickMap[pk.participant_id] = pk })
-
   return (
     <div>
       <h2 style={sh2}>Picks</h2>
-      <div style={{ display:'flex', gap:10, alignItems:'center', marginBottom:16, flexWrap:'wrap' }}>
-        <label style={{ fontSize:14, fontWeight:600 }}>Gameweek:</label>
-        <select value={selectedGw||''} onChange={e=>setSelectedGw(e.target.value)} style={sselect}>
-          {gameweeks.map(g=><option key={g.id} value={g.id}>{g.label || `GW ${g.week_number}`}</option>)}
-        </select>
-        {status && <span style={{ fontSize:13, color:status.startsWith('✓')?'#16a34a':'#dc2626' }}>{status}</span>}
+      <div style={{ fontSize:12, color:'#6b7280', marginBottom:14 }}>
+        One player pick per person. Changing it archives the old pick (frozen at its goals so far)
+        and the new player earns goals from now on. Run a sync before switching so goal totals are current.
+        {status && <span style={{ marginLeft:10, fontSize:13, color:status.startsWith('✓')?'#16a34a':'#dc2626' }}>{status}</span>}
       </div>
       <div className="adm-table-wrap"><table style={stable}>
-        <thead><tr>{['Participant','Current Pick','Mult','Swap Used','Action'].map(h=><th key={h} style={sth}>{h}</th>)}</tr></thead>
+        <thead><tr>{['Participant','Current Pick','Mult','Previous (frozen)','Action'].map(h=><th key={h} style={sth}>{h}</th>)}</tr></thead>
         <tbody>
           {participants.map((p,i) => {
             const pick = picks.find(pk => pk.participant_id === p.id)
             const mult = pick ? getMultiplier(p.id, pick.player_id) : null
+            const myHist = history.filter(h => h.participant_id === p.id)
             return (
               <tr key={p.id} style={{ background:i%2===0?'#fff':'#f9fafb' }}>
                 <td style={std}>{p.name}</td>
                 <td style={std}>{pick ? players.find(pl=>pl.id===pick.player_id)?.name || '—' : <span style={{ color:'#dc2626', fontSize:13 }}>No pick</span>}</td>
                 <td style={std}>{mult ? <span style={{ color:'#16a34a', fontWeight:700 }}>{mult}×</span> : '—'}</td>
-                <td style={std}>{p.knockout_swap_used ? '⚡ Used' : '—'}</td>
+                <td style={std}>
+                  {myHist.length === 0 ? <span style={{ color:C.muted, fontSize:12 }}>—</span> :
+                    myHist.map((h,hi) => {
+                      const hp = players.find(pl=>pl.id===h.player_id)
+                      const earned = Math.max(0, (h.goals_at_end||0) - (h.goals_at_pick||0))
+                      return <div key={hi} style={{ fontSize:12, color:'#6b7280' }}>{hp?.name||'—'} <span style={{ color:'#16a34a' }}>({earned}g)</span></div>
+                    })
+                  }
+                </td>
                 <td style={std}>
                   {editPid === p.id ? (
                     <span style={{ display:'flex', gap:6, alignItems:'flex-start', flexWrap:'wrap' }}>
@@ -744,12 +734,13 @@ function Scoring() {
     try {
       const players = await fetchAll(() => supabase.from('players').select('id, team_id, total_goals'))
       const [{ data: participants }, { data: gameweeks }, { data: ptRows }, { data: matches },
-             { data: picks }, { data: settings }] = await Promise.all([
+             { data: picks }, { data: pickHistory }, { data: settings }] = await Promise.all([
         supabase.from('participants').select('id, name, paid'),
         supabase.from('gameweeks').select('*'),
         supabase.from('participant_teams').select('participant_id, team_id, pool'),
         supabase.from('matches').select('*').not('home_score', 'is', null),
-        supabase.from('player_picks').select('participant_id, gameweek_id, player_id, goals_at_pick, goals_at_end'),
+        supabase.from('player_picks').select('participant_id, player_id, goals_at_pick'),
+        supabase.from('player_pick_history').select('participant_id, player_id, goals_at_pick, goals_at_end'),
         supabase.from('settings').select('*').eq('id', 1).single(),
       ])
       // Map match_id -> match (for attributing player goals by date)
@@ -790,30 +781,34 @@ function Scoring() {
         return owned ? (pickMults[owned.pool] || 1) : 1
       }
 
-      // Player points with fair switching:
-      // each pick earns its player's goals scored AFTER the pick's snapshot (goals_at_pick),
-      // capped at goals_at_end if the pick was later replaced (so the old pick keeps only what
-      // it had at the switch; the new pick earns everything beyond its own snapshot).
+      // Player points with fair switching (one live pick per participant + frozen history):
+      //  - live pick earns goals scored after its snapshot (total_goals - goals_at_pick)
+      //  - each history (superseded) pick earns goals_at_end - goals_at_pick (frozen)
       const gwOrder = {}
       gameweeks.forEach(g => { gwOrder[g.id] = g.week_number || 0 })
+      // latest gameweek id (player points are attributed here so they're counted once)
+      let latestGwId = null, latestWk = -1
+      for (const g of gameweeks) { if ((g.week_number||0) >= latestWk) { latestWk = g.week_number||0; latestGwId = g.id } }
+
       const playerPointsByP = {}
-      const latestGwByP = {}
       for (const p of participants) {
-        const myPicks = picks.filter(pk => pk.participant_id === p.id)
         const myTeams = ptRows.filter(r => r.participant_id === p.id)
         let total = 0
-        for (const pk of myPicks) {
-          const player = players.find(pl => pl.id === pk.player_id)
-          if (!player) continue
-          const startSnap = pk.goals_at_pick || 0
-          const endTotal = (pk.goals_at_end != null) ? pk.goals_at_end : (player.total_goals || 0)
-          const goalsEarned = Math.max(0, endTotal - startSnap)
-          const mult = pickMultFor(myTeams, player.team_id)
-          total += goalsEarned * pts.goal * mult
-          const wk = gwOrder[pk.gameweek_id] || 0
-          if (latestGwByP[p.id] == null || wk >= (gwOrder[latestGwByP[p.id]] || 0)) {
-            latestGwByP[p.id] = pk.gameweek_id
+        // live pick
+        const live = (picks || []).find(pk => pk.participant_id === p.id)
+        if (live) {
+          const player = players.find(pl => pl.id === live.player_id)
+          if (player) {
+            const earned = Math.max(0, (player.total_goals || 0) - (live.goals_at_pick || 0))
+            total += earned * pts.goal * pickMultFor(myTeams, player.team_id)
           }
+        }
+        // frozen history picks
+        for (const h of (pickHistory || []).filter(x => x.participant_id === p.id)) {
+          const player = players.find(pl => pl.id === h.player_id)
+          if (!player) continue
+          const earned = Math.max(0, (h.goals_at_end || 0) - (h.goals_at_pick || 0))
+          total += earned * pts.goal * pickMultFor(myTeams, player.team_id)
         }
         playerPointsByP[p.id] = total
       }
@@ -833,7 +828,6 @@ function Scoring() {
           const gwMatches = matches.filter(inWindow)
           const myTeams = ptRows.filter(r => r.participant_id === p.id)
           const myTeamIds = myTeams.map(r => r.team_id)
-          const pick = picks.find(pk => pk.participant_id === p.id && pk.gameweek_id === gw.id)
 
           let team_points = 0
           for (const m of gwMatches) {
@@ -868,7 +862,7 @@ function Scoring() {
           // Player points: computed once across all picks (snapshot/freeze model above);
           // attribute the whole amount to the participant's latest pick gameweek.
           let player_points = 0
-          if (latestGwByP[p.id] === gw.id) {
+          if (latestGwId === gw.id) {
             player_points = playerPointsByP[p.id] || 0
           }
 
