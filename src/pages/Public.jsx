@@ -268,18 +268,32 @@ const STAGE_ORDER = { group:0, r32:1, r16:2, qf:3, sf:4, final:5 }
 
 function Fixtures() {
   const [matches, setMatches] = useState([])
+  const [ownerByTeam, setOwnerByTeam] = useState({})  // team name -> participant name
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [filter, setFilter] = useState('all') // all | results | upcoming
 
   const load = useCallback(async (silent=false) => {
     if (!silent) setLoading(true)
-    const { data, error } = await supabase
-      .from('matches')
-      .select('id, home_team, away_team, home_score, away_score, status, stage, match_date')
-      .order('match_date')
-    if (error) { setError(error.message); setLoading(false); return }
-    setMatches(data || [])
+    const [mRes, ownRes] = await Promise.all([
+      supabase
+        .from('matches')
+        .select('id, home_team, away_team, home_score, away_score, status, stage, match_date')
+        .order('match_date'),
+      supabase
+        .from('participant_teams')
+        .select('teams(name), participants(name)'),
+    ])
+    if (mRes.error) { setError(mRes.error.message); setLoading(false); return }
+    // Build team-name -> owner-name map
+    const owners = {}
+    ;(ownRes.data || []).forEach(r => {
+      const tn = r.teams?.name
+      const pn = r.participants?.name
+      if (tn && pn) owners[tn] = pn
+    })
+    setOwnerByTeam(owners)
+    setMatches(mRes.data || [])
     setLoading(false)
   }, [])
 
@@ -298,13 +312,27 @@ function Fixtures() {
     filter === 'all' ? true : filter === 'results' ? isFinished(m) : !isFinished(m)
   )
 
+  const newestFirst = filter === 'results'  // results show most recent at the top
+
   const byStage = {}
   for (const m of shown) {
     const st = m.stage || 'group'
     if (!byStage[st]) byStage[st] = []
     byStage[st].push(m)
   }
-  const stages = Object.keys(byStage).sort((a,b)=>(STAGE_ORDER[a]??9)-(STAGE_ORDER[b]??9))
+  // Within each stage, order matches by date (newest first for results, else oldest first)
+  for (const st in byStage) {
+    byStage[st].sort((a,b) => {
+      const da = a.match_date ? new Date(a.match_date).getTime() : 0
+      const db = b.match_date ? new Date(b.match_date).getTime() : 0
+      return newestFirst ? db - da : da - db
+    })
+  }
+  // Stage order: for results, show the latest stages first (Final → Group); otherwise Group → Final
+  const stages = Object.keys(byStage).sort((a,b) => {
+    const oa = STAGE_ORDER[a] ?? 9, ob = STAGE_ORDER[b] ?? 9
+    return newestFirst ? ob - oa : oa - ob
+  })
 
   const fmtDate = d => d ? new Date(d).toLocaleDateString([], { month:'short', day:'numeric' }) : ''
   const fmtTime = d => d ? new Date(d).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' }) : ''
@@ -331,18 +359,26 @@ function Fixtures() {
                   const fin = isFinished(m)
                   const homeWin = fin && m.home_score > m.away_score
                   const awayWin = fin && m.away_score > m.home_score
+                  const homeOwner = ownerByTeam[m.home_team]
+                  const awayOwner = ownerByTeam[m.away_team]
                   return (
                     <tr key={m.id} style={{ background:i%2?C.stripe:C.white }}>
                       <td style={{ ...S.td, width:70, color:C.muted, fontSize:12, whiteSpace:'nowrap' }}>
                         {fmtDate(m.match_date)}<br/><span style={{ fontSize:11 }}>{fmtTime(m.match_date)}</span>
                       </td>
-                      <td style={{ ...S.td, textAlign:'right', fontWeight:homeWin?700:500, width:'40%' }}>{m.home_team || '—'}</td>
+                      <td style={{ ...S.td, textAlign:'right', fontWeight:homeWin?700:500, width:'40%' }}>
+                        {m.home_team || '—'}
+                        {homeOwner && <span style={{ display:'block', fontSize:11, color:C.green, fontWeight:600 }}>({homeOwner})</span>}
+                      </td>
                       <td style={{ ...S.td, textAlign:'center', width:70 }}>
                         {fin
                           ? <span style={{ fontFamily:"'Barlow Condensed', sans-serif", fontWeight:700, fontSize:17 }}>{m.home_score}–{m.away_score}</span>
                           : <span style={{ color:C.muted, fontSize:12 }}>v</span>}
                       </td>
-                      <td style={{ ...S.td, textAlign:'left', fontWeight:awayWin?700:500, width:'40%' }}>{m.away_team || '—'}</td>
+                      <td style={{ ...S.td, textAlign:'left', fontWeight:awayWin?700:500, width:'40%' }}>
+                        {m.away_team || '—'}
+                        {awayOwner && <span style={{ display:'block', fontSize:11, color:C.green, fontWeight:600 }}>({awayOwner})</span>}
+                      </td>
                     </tr>
                   )
                 })}
@@ -456,7 +492,6 @@ export default function Public() {
             </div>
             <div style={{ display:'flex', alignItems:'center', gap:10 }}>
               <Link to="/admin" style={{ fontFamily:"'Outfit', sans-serif", fontSize:12, color:'rgba(255,255,255,0.35)', textDecoration:'none' }}>Admin</Link>
-              <Link to="/picks" style={{ fontFamily:"'Outfit', sans-serif", fontSize:13, color:'rgba(255,255,255,0.7)', textDecoration:'none', background:'rgba(255,255,255,0.1)', padding:'6px 14px', borderRadius:20, whiteSpace:'nowrap' }}>⚽ My Pick</Link>
             </div>
           </div>
           <nav className="tab-nav">
