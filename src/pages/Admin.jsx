@@ -831,7 +831,10 @@ function Scoring() {
           const gwStart = gw.starts_at ? new Date(gw.starts_at) : null
           const gwEnd = gw.ends_at ? new Date(gw.ends_at) : null
           const inWindow = (m) => {
-            if (m.gameweek_id && m.gameweek_id === gw.id) return true   // honour explicit tag if present
+            // If the match has an explicit gameweek tag, trust ONLY that (prevents a match
+            // from also matching an overlapping date window and being counted twice).
+            if (m.gameweek_id) return m.gameweek_id === gw.id
+            // Otherwise fall back to date-window matching
             if (!gwStart || !gwEnd || !m.match_date) return false
             const d = new Date(m.match_date)
             return d >= gwStart && d <= gwEnd
