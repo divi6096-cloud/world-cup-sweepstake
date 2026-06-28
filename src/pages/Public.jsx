@@ -302,51 +302,70 @@ function TeamOwnership() {
 
 // ── Weekly Picks ───────────────────────────────────────────────────────────────
 function WeeklyPicks() {
-  const [picks, setPicks] = useState({}); const [gwMeta, setGwMeta] = useState({}); const [activeGw, setActiveGw] = useState(null); const [loading, setLoading] = useState(true); const [error, setError] = useState(null)
-  useEffect(() => {
-    (async () => {
-      const [picksRes, gwRes] = await Promise.all([
-        supabase.from('player_picks').select('gameweek_id, participants(name), players(name, position, teams(name, fifa_code))'),
-        supabase.from('gameweeks').select('*').order('week_number'),
-      ])
-      if (picksRes.error) { setError(picksRes.error.message); setLoading(false); return }
-      const meta = {}
-      for (const gw of gwRes.data||[]) meta[gw.id] = gw.week_number || gw.id
-      setGwMeta(meta)
-      const grouped = {}
-      for (const row of picksRes.data||[]) {
-        const gwId = row.gameweek_id
-        if (!grouped[gwId]) grouped[gwId] = []
-        grouped[gwId].push({ participant:row.participants?.name??'—', player:row.players?.name??'—', position:row.players?.position??'—', team:row.players?.teams?.name??'—', fifa:row.players?.teams?.fifa_code??'' })
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+
+  const load = useCallback(async () => {
+    // Current live pick per participant (one-pick-per-person model), plus goals snapshot
+    const [picksRes, partRes] = await Promise.all([
+      supabase.from('player_picks').select('participant_id, goals_at_pick, players(name, position, total_goals, teams(name, fifa_code))'),
+      supabase.from('participants').select('id, name'),
+    ])
+    if (picksRes.error) { setError(picksRes.error.message); setLoading(false); return }
+    const pickByP = {}
+    for (const r of picksRes.data || []) pickByP[r.participant_id] = r
+    const list = (partRes.data || []).map(p => {
+      const pk = pickByP[p.id]
+      const pl = pk?.players
+      const earned = pl ? Math.max(0, (pl.total_goals || 0) - (pk.goals_at_pick || 0)) : 0
+      return {
+        participant: p.name,
+        player: pl?.name || null,
+        position: pl?.position || '—',
+        team: pl?.teams?.name || '—',
+        fifa: pl?.teams?.fifa_code || '',
+        goals: earned,
       }
-      setPicks(grouped)
-      const ids = Object.keys(grouped)
-      if (ids.length) setActiveGw(ids[ids.length-1])
-      setLoading(false)
-    })()
+    }).sort((a,b) => a.participant.localeCompare(b.participant))
+    setRows(list)
+    setLoading(false)
   }, [])
+  useEffect(() => { load(); const iv = setInterval(load, REFRESH_INTERVAL); return () => clearInterval(iv) }, [load])
+
   if (loading) return <Spinner />
   if (error)   return <EmptyState icon="⚠️" message={`Error: ${error}`} />
-  if (!Object.keys(picks).length) return <EmptyState icon="⚽" message="No player picks yet." />
+  if (!rows.length) return <EmptyState icon="⚽" message="No participants yet." />
+
   const posColors = { FW:{bg:'#fee2e2',text:'#991b1b'}, MF:{bg:'#fef3c7',text:'#92400e'}, DF:{bg:'#dbeafe',text:'#1e40af'}, GK:{bg:'#f3f4f6',text:'#374151'} }
-  const current = (picks[activeGw]||[]).sort((a,b)=>a.participant.localeCompare(b.participant))
   return (
     <div>
-      <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:16 }}>
-        {Object.keys(picks).map(gwId => { const active=gwId===activeGw; return <button key={gwId} onClick={()=>setActiveGw(gwId)} style={{ padding:'8px 18px', borderRadius:8, border:`1.5px solid ${active?C.green:C.border}`, background:active?C.green:C.white, color:active?C.white:C.muted, fontFamily:"'Barlow Condensed', sans-serif", fontWeight:600, fontSize:14, letterSpacing:'0.04em', cursor:'pointer' }}>GW {gwMeta[gwId]??gwId.slice(0,6)}</button> })}
+      <div style={{ fontFamily:"'Outfit', sans-serif", fontSize:12, color:C.muted, marginBottom:14 }}>
+        Each player's current pick. Goals shown are those scored since the pick was made (what it's earning).
       </div>
       <div style={S.cardScroll}>
         <table style={S.table}>
-          <thead><tr><th style={S.th}>Participant</th><th style={S.th}>Player</th><th style={S.th}>Position</th><th style={S.th}>Team</th></tr></thead>
+          <thead><tr>
+            <th style={S.th}>Participant</th>
+            <th style={S.th}>Current Pick</th>
+            <th style={S.th}>Position</th>
+            <th style={S.th}>Team</th>
+            <th style={{ ...S.th, textAlign:'right' }}>Goals</th>
+          </tr></thead>
           <tbody>
-            {current.map((row,i) => { const posKey=row.position?.slice(0,2).toUpperCase(); const posC=posColors[posKey]||{bg:'#f3f4f6',text:'#374151'}; return (
-              <tr key={i} style={{ background:i%2?C.stripe:C.white }}>
-                <td style={{ ...S.td, fontWeight:600 }}>{row.participant}</td>
-                <td style={S.td}>{row.player}</td>
-                <td style={S.td}><Badge colors={posC}>{row.position}</Badge></td>
-                <td style={S.td}>{row.team}{row.fifa&&<span style={{ color:C.muted, marginLeft:6, fontSize:12 }}>({row.fifa})</span>}</td>
-              </tr>
-            )})}
+            {rows.map((row,i) => {
+              const posKey = row.position?.slice(0,2).toUpperCase()
+              const posC = posColors[posKey] || { bg:'#f3f4f6', text:'#374151' }
+              return (
+                <tr key={i} style={{ background:i%2?C.stripe:C.white }}>
+                  <td style={{ ...S.td, fontWeight:600 }}>{row.participant}</td>
+                  <td style={S.td}>{row.player || <span style={{ color:C.muted, fontSize:13 }}>No pick</span>}</td>
+                  <td style={S.td}>{row.player ? <Badge colors={posC}>{row.position}</Badge> : '—'}</td>
+                  <td style={S.td}>{row.player ? <>{row.team}{row.fifa && <span style={{ color:C.muted, marginLeft:6, fontSize:12 }}>({row.fifa})</span>}</> : '—'}</td>
+                  <td style={{ ...S.td, textAlign:'right', fontFamily:"'Barlow Condensed', sans-serif", fontWeight:700, fontSize:18 }}>{row.player ? row.goals : '—'}</td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
@@ -657,7 +676,7 @@ const TABS = [
   { label:'Bracket', icon:'🗺️' },
   { label:'Goalscorers', icon:'👟' },
   { label:'Team Ownership', icon:'🌍' },
-  { label:'Weekly Picks', icon:'⚽' },
+  { label:'Player Picks', icon:'⚽' },
 ]
 
 export default function Public() {
