@@ -5,13 +5,15 @@ import { supabase } from '../lib/supabase'
 const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD || 'rift2026'
 
 const STAGE_MAP = {
-  GROUP_STAGE: 'group', LAST_16: 'r16', ROUND_OF_16: 'r16',
+  GROUP_STAGE: 'group',
+  LAST_32: 'r32', ROUND_OF_32: 'r32', R32: 'r32',
+  LAST_16: 'r16', ROUND_OF_16: 'r16',
   QUARTER_FINALS: 'qf', SEMI_FINALS: 'sf',
   FINAL: 'final', '3RD_PLACE_MATCH': 'final',
 }
 function apiStageToGW(stage, matchday) {
   if (stage === 'GROUP_STAGE') return matchday || 1
-  return { LAST_16: 4, ROUND_OF_16: 4, QUARTER_FINALS: 5, SEMI_FINALS: 6, FINAL: 7, '3RD_PLACE_MATCH': 7 }[stage] ?? 4
+  return { LAST_32: 4, ROUND_OF_32: 4, R32: 4, LAST_16: 5, ROUND_OF_16: 5, QUARTER_FINALS: 6, SEMI_FINALS: 7, FINAL: 8, '3RD_PLACE_MATCH': 8 }[stage] ?? 4
 }
 
 const C = {
@@ -1014,6 +1016,7 @@ function Settings() {
 
       <h3 style={sh3}>Points per Stage Win</h3>
       {field('Group Stage Win', 'points_group_win', 'number')}
+      {field('Round of 32', 'points_r32', 'number')}
       {field('Round of 16', 'points_r16', 'number')}
       {field('Quarter-Final', 'points_qf', 'number')}
       {field('Semi-Final', 'points_sf', 'number')}

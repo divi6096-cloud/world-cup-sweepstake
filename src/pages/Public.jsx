@@ -555,9 +555,106 @@ function Goalscorers() {
 }
 
 // ── Public page ────────────────────────────────────────────────────────────────
+// ── Knockout Bracket ────────────────────────────────────────────────────────────
+function Bracket() {
+  const [matches, setMatches] = useState([])
+  const [ownerByTeam, setOwnerByTeam] = useState({})
+  const [loading, setLoading] = useState(true)
+
+  const load = useCallback(async () => {
+    const [mRes, ownRes] = await Promise.all([
+      supabase.from('matches').select('id, home_team, away_team, home_score, away_score, status, stage, match_date').order('id'),
+      supabase.from('participant_teams').select('teams(name), participants(name)'),
+    ])
+    const owners = {}
+    ;(ownRes.data || []).forEach(r => { const t=r.teams?.name, p=r.participants?.name; if (t&&p) owners[t]=p })
+    setOwnerByTeam(owners)
+    setMatches((mRes.data || []).filter(m => ['r32','r16','qf','sf','final'].includes(m.stage)))
+    setLoading(false)
+  }, [])
+  useEffect(() => { load(); const t=setInterval(load, REFRESH_INTERVAL); return ()=>clearInterval(t) }, [load])
+
+  if (loading) return <Spinner />
+
+  const rounds = [
+    { key:'r32', label:'Round of 32' },
+    { key:'r16', label:'Round of 16' },
+    { key:'qf',  label:'Quarter-finals' },
+    { key:'sf',  label:'Semi-finals' },
+    { key:'final', label:'Final' },
+  ]
+  const byRound = {}
+  rounds.forEach(r => { byRound[r.key] = matches.filter(m => m.stage === r.key).sort((a,b)=>a.id-b.id) })
+
+  const anyKO = rounds.some(r => byRound[r.key].length > 0)
+  if (!anyKO) return <EmptyState icon="🗺️" message="The knockout bracket will appear once Round of 32 fixtures are synced." />
+
+  const fmtDate = d => d ? new Date(d).toLocaleDateString([], { month:'short', day:'numeric' }) : ''
+  const fmtTime = d => d ? new Date(d).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' }) : ''
+  const isFinished = m => m.status === 'FINISHED' || (m.home_score != null && m.away_score != null)
+
+  const TeamRow = ({ name, score, won, owner }) => (
+    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'5px 9px',
+      background: won ? '#f0fdf4' : 'transparent', borderRadius:4 }}>
+      <div style={{ minWidth:0 }}>
+        <div style={{ fontFamily:"'Outfit', sans-serif", fontSize:13, fontWeight:won?700:500,
+          color: name ? '#111827' : C.muted, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+          {name || 'TBD'}
+        </div>
+        {owner && <div style={{ fontFamily:"'Outfit', sans-serif", fontSize:10, color:C.green, fontWeight:600 }}>{owner}</div>}
+      </div>
+      <span style={{ fontFamily:"'Barlow Condensed', sans-serif", fontWeight:700, fontSize:15,
+        color: score==null ? C.muted : '#111827', marginLeft:8 }}>{score==null ? '' : score}</span>
+    </div>
+  )
+
+  const MatchCard = ({ m }) => {
+    const fin = isFinished(m)
+    const homeWon = fin && m.home_score > m.away_score
+    const awayWon = fin && m.away_score > m.home_score
+    return (
+      <div style={{ background:C.white, border:`1px solid ${C.border}`, borderRadius:8, padding:4,
+        width:170, boxShadow:'0 1px 2px rgba(0,0,0,0.05)' }}>
+        <TeamRow name={m.home_team} score={fin?m.home_score:null} won={homeWon} owner={ownerByTeam[m.home_team]} />
+        <div style={{ height:1, background:C.border, margin:'1px 9px' }} />
+        <TeamRow name={m.away_team} score={fin?m.away_score:null} won={awayWon} owner={ownerByTeam[m.away_team]} />
+        <div style={{ fontFamily:"'Outfit', sans-serif", fontSize:10, color:C.muted, textAlign:'center', padding:'4px 0 2px' }}>
+          {fin ? 'Full time' : m.match_date ? `${fmtDate(m.match_date)} · ${fmtTime(m.match_date)}` : 'TBD'}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      <div style={{ fontFamily:"'Outfit', sans-serif", fontSize:12, color:C.muted, marginBottom:14 }}>
+        Scroll sideways to follow the bracket through to the final. Matchups fill in as each round is played.
+      </div>
+      <div style={{ overflowX:'auto', WebkitOverflowScrolling:'touch', paddingBottom:12 }}>
+        <div style={{ display:'flex', gap:20, minWidth:'min-content' }}>
+          {rounds.map(r => (
+            byRound[r.key].length > 0 && (
+              <div key={r.key} style={{ display:'flex', flexDirection:'column', flexShrink:0 }}>
+                <div style={{ fontFamily:"'Barlow Condensed', sans-serif", fontWeight:700, fontSize:13,
+                  textTransform:'uppercase', letterSpacing:'0.06em', color:C.muted, marginBottom:10, textAlign:'center' }}>
+                  {r.label}
+                </div>
+                <div style={{ display:'flex', flexDirection:'column', justifyContent:'space-around', gap:10, flex:1 }}>
+                  {byRound[r.key].map(m => <MatchCard key={m.id} m={m} />)}
+                </div>
+              </div>
+            )
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 const TABS = [
   { label:'Leaderboard', icon:'🏆' },
   { label:'Fixtures', icon:'📅' },
+  { label:'Bracket', icon:'🗺️' },
   { label:'Goalscorers', icon:'👟' },
   { label:'Team Ownership', icon:'🌍' },
   { label:'Weekly Picks', icon:'⚽' },
@@ -592,7 +689,7 @@ export default function Public() {
         </div>
       </header>
       <main className="pub-main" style={{ maxWidth:960, margin:'0 auto', padding:'24px 20px 48px' }}>
-        {tab===0&&<Leaderboard/>}{tab===1&&<Fixtures/>}{tab===2&&<Goalscorers/>}{tab===3&&<TeamOwnership/>}{tab===4&&<WeeklyPicks/>}
+        {tab===0&&<Leaderboard/>}{tab===1&&<Fixtures/>}{tab===2&&<Bracket/>}{tab===3&&<Goalscorers/>}{tab===4&&<TeamOwnership/>}{tab===5&&<WeeklyPicks/>}
       </main>
     </div>
   )
