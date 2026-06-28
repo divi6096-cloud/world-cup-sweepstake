@@ -841,6 +841,8 @@ function Scoring() {
           const myTeamIds = myTeams.map(r => r.team_id)
 
           let team_points = 0
+          const poolPts = { A: 0, B: 0, C: 0 }
+          const poolOf = (teamId) => { const o = myTeams.find(r => r.team_id === teamId); return o ? o.pool : null }
           for (const m of gwMatches) {
             const stageMap = { group: pts.group_win, r32: pts.r32, r16: pts.r16, qf: pts.qf, sf: pts.sf, final: pts.final }
             const stagePts = stageMap[m.stage] || pts.group_win
@@ -857,7 +859,9 @@ function Scoring() {
               if (draw) raw += pts.draw
               else if (hs > as) raw += stagePts
               raw += hs * pts.team_goal
-              team_points += raw * mult
+              const earned = raw * mult
+              team_points += earned
+              const pool = poolOf(m.home_team_id); if (pool && poolPts[pool] !== undefined) poolPts[pool] += earned
             }
             // Away team owned
             if (ownsAway) {
@@ -866,7 +870,9 @@ function Scoring() {
               if (draw) raw += pts.draw
               else if (as > hs) raw += stagePts
               raw += as * pts.team_goal
-              team_points += raw * mult
+              const earned = raw * mult
+              team_points += earned
+              const pool = poolOf(m.away_team_id); if (pool && poolPts[pool] !== undefined) poolPts[pool] += earned
             }
           }
 
@@ -883,6 +889,9 @@ function Scoring() {
             gameweek_id: gw.id,
             team_points,
             player_points,
+            pool_a_points: +poolPts.A.toFixed(2),
+            pool_b_points: +poolPts.B.toFixed(2),
+            pool_c_points: +poolPts.C.toFixed(2),
             total_points: total,
             calculated_at: new Date().toISOString(),
           })

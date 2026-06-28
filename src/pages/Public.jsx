@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
+import { quickSyncAndCalculate } from '../lib/syncEngine'
 
 const C = {
   dark:'#0d1f0f', green:'#1a4a20', gold:'#e8b84b', goldDim:'#c49a30',
@@ -69,6 +70,30 @@ function Leaderboard() {
   const [error, setError] = useState(null)
   const [lastUpdated, setLastUpdated] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+  const [syncMsg, setSyncMsg] = useState('')
+
+  async function updateScores() {
+    setSyncing(true); setSyncMsg('Checking for updates…')
+    try {
+      const res = await quickSyncAndCalculate(supabase, {
+        cooldownMinutes: 30,
+        onProgress: (msg) => setSyncMsg(msg),
+      })
+      if (!res.ran && res.reason === 'cooldown') {
+        const wait = res.cooldownMinutes - res.minsAgo
+        setSyncMsg(`Already updated ${res.minsAgo} min ago — try again in ~${wait} min.`)
+        await load(true)   // still refresh the view from DB
+      } else {
+        setSyncMsg(`✓ Updated — ${res.updated} match${res.updated === 1 ? '' : 'es'} refreshed.`)
+        await load(true)
+      }
+    } catch (e) {
+      setSyncMsg(`✗ ${e.message}`)
+    }
+    setSyncing(false)
+    setTimeout(() => setSyncMsg(''), 6000)
+  }
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true)
@@ -76,19 +101,22 @@ function Leaderboard() {
 
     const [{ data: allParticipants, error: pe }, { data: scores, error: se }] = await Promise.all([
       supabase.from('participants').select('id, name, paid'),
-      supabase.from('participant_scores').select('participant_id, player_points, team_points, total_points'),
+      supabase.from('participant_scores').select('participant_id, player_points, team_points, pool_a_points, pool_b_points, pool_c_points, total_points'),
     ])
 
     if (pe || se) { setError((pe||se).message); setLoading(false); setRefreshing(false); return }
 
     const map = {}
     for (const p of allParticipants || []) {
-      map[p.id] = { name:p.name, paid:p.paid, team_points:0, player_points:0, total_points:0 }
+      map[p.id] = { name:p.name, paid:p.paid, team_points:0, player_points:0, a:0, b:0, c:0, total_points:0 }
     }
     for (const s of scores || []) {
       if (map[s.participant_id]) {
         map[s.participant_id].team_points   += Number(s.team_points)   || 0
         map[s.participant_id].player_points += Number(s.player_points) || 0
+        map[s.participant_id].a             += Number(s.pool_a_points) || 0
+        map[s.participant_id].b             += Number(s.pool_b_points) || 0
+        map[s.participant_id].c             += Number(s.pool_c_points) || 0
         map[s.participant_id].total_points  += Number(s.total_points)  || 0
       }
     }
@@ -115,15 +143,26 @@ function Leaderboard() {
 
   return (
     <div>
+      {/* Update Scores — throttled public sync */}
+      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:14, flexWrap:'wrap' }}>
+        <button onClick={updateScores} disabled={syncing}
+          style={{ background:syncing?C.goldDim:C.green, color:C.white, border:'none', borderRadius:8,
+            padding:'10px 18px', fontFamily:"'Barlow Condensed', sans-serif", fontWeight:700, fontSize:15,
+            letterSpacing:'0.04em', cursor:syncing?'wait':'pointer', display:'flex', alignItems:'center', gap:8 }}>
+          {syncing ? '⏳ Updating…' : '🔄 Update Scores'}
+        </button>
+        {syncMsg && <span style={{ fontFamily:"'Outfit', sans-serif", fontSize:13,
+          color: syncMsg.startsWith('✓') ? C.green : syncMsg.startsWith('✗') ? '#dc2626' : C.muted }}>{syncMsg}</span>}
+      </div>
+
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
         {hasScores
-          ? <div style={{ fontFamily:"'Outfit', sans-serif", fontSize:12, color:C.muted }}>Auto-refreshes every 30s</div>
+          ? <div style={{ fontFamily:"'Outfit', sans-serif", fontSize:12, color:C.muted }}>Auto-refreshes every 30s · tap Update Scores to pull latest results</div>
           : <div style={{ fontFamily:"'Outfit', sans-serif", fontSize:12, color:C.muted }}>All participants · Scores start when matches kick off</div>
         }
         <div style={{ display:'flex', alignItems:'center', gap:8 }}>
           {refreshing && <div style={{ fontFamily:"'Outfit', sans-serif", fontSize:12, color:C.gold }}>Updating…</div>}
           {lastUpdated && <div style={{ fontFamily:"'Outfit', sans-serif", fontSize:12, color:C.muted }}>Updated {fmtTime(lastUpdated)}</div>}
-          <button onClick={() => load(true)} style={{ background:'transparent', border:`1px solid ${C.border}`, borderRadius:6, padding:'4px 10px', fontFamily:"'Outfit', sans-serif", fontSize:12, cursor:'pointer', color:C.muted }}>↻ Refresh</button>
         </div>
       </div>
 
@@ -134,8 +173,10 @@ function Leaderboard() {
               <th style={{ ...S.th, width:52, textAlign:'center' }}>#</th>
               <th style={S.th}>Name</th>
               <th style={S.th}>Status</th>
-              <th style={{ ...S.th, textAlign:'right' }}>Team pts</th>
-              <th style={{ ...S.th, textAlign:'right' }}>Pick pts</th>
+              <th style={{ ...S.th, textAlign:'right' }}>Pool A</th>
+              <th style={{ ...S.th, textAlign:'right' }}>Pool B</th>
+              <th style={{ ...S.th, textAlign:'right' }}>Pool C</th>
+              <th style={{ ...S.th, textAlign:'right' }}>Pick</th>
               <th style={{ ...S.th, textAlign:'right' }}>Total</th>
             </tr>
           </thead>
@@ -147,7 +188,9 @@ function Leaderboard() {
                 </td>
                 <td style={{ ...S.td, fontWeight:600 }}>{row.name}</td>
                 <td style={S.td}><Badge colors={row.paid?C.paid:C.free}>{row.paid?'Paid':'Free'}</Badge></td>
-                <td style={{ ...S.td, textAlign:'right', color:C.muted }}>{row.team_points.toFixed(1)}</td>
+                <td style={{ ...S.td, textAlign:'right', color:C.muted }}>{row.a.toFixed(1)}</td>
+                <td style={{ ...S.td, textAlign:'right', color:C.muted }}>{row.b.toFixed(1)}</td>
+                <td style={{ ...S.td, textAlign:'right', color:C.muted }}>{row.c.toFixed(1)}</td>
                 <td style={{ ...S.td, textAlign:'right', color:C.muted }}>{row.player_points.toFixed(1)}</td>
                 <td style={{ ...S.td, textAlign:'right', fontWeight:700, fontFamily:"'Barlow Condensed', sans-serif", fontSize:18, color:i===0&&row.total_points>0?C.goldDim:'#111827' }}>
                   {row.total_points.toFixed(1)}
@@ -157,11 +200,97 @@ function Leaderboard() {
           </tbody>
         </table>
       </div>
+
+      <ScoringFAQ />
     </div>
   )
 }
 
-// ── Team Ownership ─────────────────────────────────────────────────────────────
+// ── Scoring FAQ (collapsible, reads live settings) ──────────────────────────────
+function ScoringFAQ() {
+  const [open, setOpen] = useState(false)
+  const [s, setS] = useState(null)
+  useEffect(() => {
+    supabase.from('settings').select('*').eq('id', 1).single().then(({ data }) => setS(data || {}))
+  }, [])
+
+  const v = (key, def) => (s && s[key] != null ? s[key] : def)
+  const row = (label, val) => (
+    <div style={{ display:'flex', justifyContent:'space-between', padding:'5px 0', borderBottom:`1px solid ${C.border}`, fontSize:13.5 }}>
+      <span style={{ color:'#374151' }}>{label}</span>
+      <span style={{ fontWeight:700, color:C.green }}>{val}</span>
+    </div>
+  )
+
+  return (
+    <div style={{ marginTop:18 }}>
+      <button onClick={() => setOpen(o => !o)}
+        style={{ width:'100%', background:C.white, border:`1px solid ${C.border}`, borderRadius:10,
+          padding:'13px 16px', display:'flex', justifyContent:'space-between', alignItems:'center',
+          cursor:'pointer', fontFamily:"'Barlow Condensed', sans-serif", fontWeight:700, fontSize:15,
+          letterSpacing:'0.04em', color:C.dark, textTransform:'uppercase' }}>
+        <span>📖 How points work</span>
+        <span style={{ color:C.muted, fontSize:18 }}>{open ? '−' : '+'}</span>
+      </button>
+
+      {open && (
+        <div style={{ background:C.white, border:`1px solid ${C.border}`, borderTop:'none',
+          borderRadius:'0 0 10px 10px', padding:'4px 18px 18px', fontFamily:"'Outfit', sans-serif", color:'#374151', fontSize:14, lineHeight:1.6 }}>
+
+          <p style={{ marginTop:14 }}>
+            Everyone owns <strong>three teams</strong> (one from each pool: A strongest, B middle, C weakest)
+            and picks <strong>one player</strong>. Your score is your three teams' points plus your player's points.
+          </p>
+
+          <h4 style={{ ...faqH }}>Team points — per match your team plays</h4>
+          {row('Win (group stage)', `${v('points_group_win',2)} pts`)}
+          {row('Win (Round of 32)', `${v('points_r32',3)} pts`)}
+          {row('Win (Round of 16)', `${v('points_r16',5)} pts`)}
+          {row('Win (Quarter-final)', `${v('points_qf',8)} pts`)}
+          {row('Win (Semi-final)', `${v('points_sf',13)} pts`)}
+          {row('Win (Final)', `${v('points_final',20)} pts`)}
+          {row('Draw', `${v('points_draw',1)} pt`)}
+          {row('Each goal your team scores', `${v('points_team_goal',1)} pt`)}
+
+          <h4 style={faqH}>Team multipliers (by pool)</h4>
+          <p style={{ margin:'2px 0 8px' }}>Your team's points are multiplied based on its pool:</p>
+          {row('Pool A team', `× ${v('team_a_multiplier',1.5)}`)}
+          {row('Pool B team', `× ${v('pool_b_team_mult',1.5)}`)}
+          {row('Pool C team', `× ${v('pool_c_team_mult',2)}`)}
+
+          <h4 style={faqH}>Player pick points</h4>
+          {row('Each goal your player scores', `${v('points_goal',4)} pts`)}
+          <p style={{ margin:'8px 0 6px' }}>
+            Your player scores at <strong>1×</strong> normally — <em>unless</em> they play for one of your own teams,
+            in which case they're boosted:
+          </p>
+          {row('Player on your Pool A team', `× ${v('pick_a_multiplier',1)}`)}
+          {row('Player on your Pool B team', `× ${v('pick_b_multiplier',2)}`)}
+          {row('Player on your Pool C team', `× ${v('pick_c_multiplier',3)}`)}
+
+          <h4 style={faqH}>Switching your player</h4>
+          <p style={{ margin:'2px 0' }}>
+            You keep your group-stage player's goals, and once knockouts begin you may switch once.
+            A new player only earns goals scored <strong>after</strong> the switch — you can't grab a player's earlier goals.
+          </p>
+
+          <h4 style={faqH}>A worked example</h4>
+          <p style={{ margin:'2px 0', background:C.cream, padding:'10px 12px', borderRadius:8 }}>
+            You own a Pool C team that wins a group game 3–1, and your picked player (on that Pool C team) scores 1:<br/>
+            <strong>Team:</strong> ({v('points_group_win',2)} win + 3 goals × {v('points_team_goal',1)}) × {v('pool_c_team_mult',2)} = {((Number(v('points_group_win',2)) + 3*Number(v('points_team_goal',1))) * Number(v('pool_c_team_mult',2))).toFixed(0)} pts<br/>
+            <strong>Player:</strong> 1 goal × {v('points_goal',4)} × {v('pick_c_multiplier',3)} = {(Number(v('points_goal',4)) * Number(v('pick_c_multiplier',3))).toFixed(0)} pts
+          </p>
+
+          <p style={{ marginTop:12, fontSize:12.5, color:C.muted }}>
+            Tap <strong>Update Scores</strong> at the top to pull the latest results (available every 30 minutes).
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+const faqH = { fontFamily:"'Barlow Condensed', sans-serif", fontSize:15, fontWeight:700, color:C.dark, margin:'18px 0 6px', letterSpacing:'0.03em' }
 function TeamOwnership() {
   const [rows, setRows] = useState([]); const [loading, setLoading] = useState(true); const [error, setError] = useState(null)
   useEffect(() => {
