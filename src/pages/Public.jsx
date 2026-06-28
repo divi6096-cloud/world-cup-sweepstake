@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
-import { quickSyncAndCalculate } from '../lib/syncEngine'
 
 const C = {
   dark:'#0d1f0f', green:'#1a4a20', gold:'#e8b84b', goldDim:'#c49a30',
@@ -70,30 +69,6 @@ function Leaderboard() {
   const [error, setError] = useState(null)
   const [lastUpdated, setLastUpdated] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
-  const [syncing, setSyncing] = useState(false)
-  const [syncMsg, setSyncMsg] = useState('')
-
-  async function updateScores() {
-    setSyncing(true); setSyncMsg('Checking for updates…')
-    try {
-      const res = await quickSyncAndCalculate(supabase, {
-        cooldownMinutes: 30,
-        onProgress: (msg) => setSyncMsg(msg),
-      })
-      if (!res.ran && res.reason === 'cooldown') {
-        const wait = res.cooldownMinutes - res.minsAgo
-        setSyncMsg(`Already updated ${res.minsAgo} min ago — try again in ~${wait} min.`)
-        await load(true)   // still refresh the view from DB
-      } else {
-        setSyncMsg(`✓ Updated — ${res.updated} match${res.updated === 1 ? '' : 'es'} refreshed.`)
-        await load(true)
-      }
-    } catch (e) {
-      setSyncMsg(`✗ ${e.message}`)
-    }
-    setSyncing(false)
-    setTimeout(() => setSyncMsg(''), 6000)
-  }
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true)
@@ -143,21 +118,9 @@ function Leaderboard() {
 
   return (
     <div>
-      {/* Update Scores — throttled public sync */}
-      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:14, flexWrap:'wrap' }}>
-        <button onClick={updateScores} disabled={syncing}
-          style={{ background:syncing?C.goldDim:C.green, color:C.white, border:'none', borderRadius:8,
-            padding:'10px 18px', fontFamily:"'Barlow Condensed', sans-serif", fontWeight:700, fontSize:15,
-            letterSpacing:'0.04em', cursor:syncing?'wait':'pointer', display:'flex', alignItems:'center', gap:8 }}>
-          {syncing ? '⏳ Updating…' : '🔄 Update Scores'}
-        </button>
-        {syncMsg && <span style={{ fontFamily:"'Outfit', sans-serif", fontSize:13,
-          color: syncMsg.startsWith('✓') ? C.green : syncMsg.startsWith('✗') ? '#dc2626' : C.muted }}>{syncMsg}</span>}
-      </div>
-
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
         {hasScores
-          ? <div style={{ fontFamily:"'Outfit', sans-serif", fontSize:12, color:C.muted }}>Auto-refreshes every 30s · tap Update Scores to pull latest results</div>
+          ? <div style={{ fontFamily:"'Outfit', sans-serif", fontSize:12, color:C.muted }}>Auto-refreshes every 30s</div>
           : <div style={{ fontFamily:"'Outfit', sans-serif", fontSize:12, color:C.muted }}>All participants · Scores start when matches kick off</div>
         }
         <div style={{ display:'flex', alignItems:'center', gap:8 }}>
@@ -282,7 +245,7 @@ function ScoringFAQ() {
           </p>
 
           <p style={{ marginTop:12, fontSize:12.5, color:C.muted }}>
-            Tap <strong>Update Scores</strong> at the top to pull the latest results (available every 30 minutes).
+            Scores update automatically as matches finish and the admin syncs results.
           </p>
         </div>
       )}
