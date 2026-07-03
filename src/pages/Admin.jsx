@@ -16,6 +16,28 @@ function apiStageToGW(stage, matchday) {
   return { LAST_32: 4, ROUND_OF_32: 4, R32: 4, LAST_16: 5, ROUND_OF_16: 5, QUARTER_FINALS: 6, SEMI_FINALS: 7, FINAL: 8, '3RD_PLACE_MATCH': 8 }[stage] ?? 4
 }
 
+// Returns the score at the end of 120 minutes (regulation + extra time), EXCLUDING any
+// penalty shootout, plus a flag indicating the tie went to penalties.
+// football-data.org convention: score.fullTime is the score AFTER extra time (i.e. the
+// 120-minute score) and does NOT include the shootout, which lives in score.penalties.
+// So in the normal case fullTime is already correct and we just flag the shootout.
+// We also support feeds that split regularTime/extraTime.
+function score120(apiScore) {
+  if (!apiScore) return { home: null, away: null, wasShootout: false }
+  const ft = apiScore.fullTime || {}
+  const pen = apiScore.penalties || {}
+  const reg = apiScore.regularTime || {}
+  const et = apiScore.extraTime || {}
+  const wasShootout = pen.home != null && pen.away != null
+
+  // Prefer explicit regulation + extra time if the feed provides them.
+  if (reg.home != null && reg.away != null) {
+    return { home: (reg.home || 0) + (et.home || 0), away: (reg.away || 0) + (et.away || 0), wasShootout }
+  }
+  // Otherwise fullTime is the 120-min score (penalties are separate in this feed).
+  return { home: ft.home ?? null, away: ft.away ?? null, wasShootout }
+}
+
 const C = {
   dark: '#0d1f0f', green: '#1a4a20', gold: '#e8b84b', goldDim: '#c49a30',
   cream: '#faf7f0', white: '#ffffff', muted: '#6b7280', border: '#e5e7eb',
@@ -257,8 +279,9 @@ function Matches() {
           match_date: m.utcDate,
           // Shared:
           stage: STAGE_MAP[m.stage] || 'group',
-          home_score: m.score?.fullTime?.home ?? null,
-          away_score: m.score?.fullTime?.away ?? null,
+          home_score: score120(m.score).home,
+          away_score: score120(m.score).away,
+          went_to_penalties: score120(m.score).wasShootout,
           status: m.status,
           api_match_id: m.id,
         })
@@ -321,8 +344,9 @@ function Matches() {
 
       for (let i = 0; i < finished.length; i++) {
         const m = finished[i]
-        const newHome = m.score?.fullTime?.home ?? null
-        const newAway = m.score?.fullTime?.away ?? null
+        const s120 = score120(m.score)
+        const newHome = s120.home
+        const newAway = s120.away
         // Skip if we already have this match FINISHED with the same score (nothing to update)
         const ex = existingByApi[m.id]
         if (ex && ex.status === 'FINISHED' && m.status === 'FINISHED'
@@ -348,6 +372,7 @@ function Matches() {
           stage: STAGE_MAP[m.stage] || 'group',
           home_score: newHome,
           away_score: newAway,
+          went_to_penalties: s120.wasShootout,
           status: m.status,
         }, { onConflict: 'api_match_id' })
         if (upErr) { errors++; continue }
@@ -853,7 +878,9 @@ function Scoring() {
             const stagePts = stageMap[m.stage] || pts.group_win
             const hs = m.home_score ?? 0
             const as = m.away_score ?? 0
-            const draw = hs === as
+            // A tie decided on penalties counts as a DRAW for scoring: no stage-win points,
+            // and goals are the 120-minute total (shootout goals are excluded at sync time).
+            const draw = (hs === as) || m.went_to_penalties === true
             const ownsHome = myTeamIds.includes(m.home_team_id)
             const ownsAway = myTeamIds.includes(m.away_team_id)
 
