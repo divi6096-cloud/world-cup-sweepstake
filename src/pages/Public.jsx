@@ -575,25 +575,118 @@ function Goalscorers() {
 
 // ── Public page ────────────────────────────────────────────────────────────────
 // ── Knockout Bracket ────────────────────────────────────────────────────────────
+// Official 2026 World Cup knockout skeleton. Each slot knows what feeds it.
+// R32 slots are identified by their fixed team pairing (since our DB ids aren't FIFA numbers).
+const R32_SLOTS = [
+  { n:73, a:'South Africa',  b:'Canada' },
+  { n:74, a:'Germany',       b:'Paraguay' },
+  { n:75, a:'Netherlands',   b:'Morocco' },
+  { n:76, a:'Brazil',        b:'Japan' },
+  { n:77, a:'France',        b:'Sweden' },
+  { n:78, a:'Ivory Coast',   b:'Norway' },
+  { n:79, a:'Mexico',        b:'Ecuador' },
+  { n:80, a:'England',       b:'Congo DR' },
+  { n:81, a:'United States', b:'Bosnia-Herzegovina' },
+  { n:82, a:'Belgium',       b:'Senegal' },
+  { n:83, a:'Portugal',      b:'Croatia' },
+  { n:84, a:'Spain',         b:'Austria' },
+  { n:85, a:'Switzerland',   b:'Algeria' },
+  { n:86, a:'Argentina',     b:'Cape Verde Islands' },
+  { n:87, a:'Colombia',      b:'Ghana' },
+  { n:88, a:'Australia',     b:'Egypt' },
+]
+// Downstream rounds: which two match numbers feed each slot (verified vs FIFA/NBC/CBS).
+const FEED = {
+  89:[74,77], 90:[73,75], 91:[76,78], 92:[79,80], 93:[83,84], 94:[81,82], 95:[86,88], 96:[85,87],
+  97:[89,90], 98:[93,94], 99:[91,92], 100:[95,96],
+  101:[97,98], 102:[99,100],
+  104:[101,102],
+}
+const ROUND_SLOTS = {
+  r32: [73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88],
+  r16: [89,90,91,92,93,94,95,96],
+  qf:  [97,98,99,100],
+  sf:  [101,102],
+  final:[104],
+}
+const norm = s => (s||'').toLowerCase().replace(/[^a-z]/g,'')
+
 function Bracket() {
-  const [matches, setMatches] = useState([])
+  const [dbMatches, setDbMatches] = useState([])
   const [ownerByTeam, setOwnerByTeam] = useState({})
   const [loading, setLoading] = useState(true)
 
   const load = useCallback(async () => {
     const [mRes, ownRes] = await Promise.all([
-      supabase.from('matches').select('id, home_team, away_team, home_score, away_score, status, stage, match_date').order('id'),
+      supabase.from('matches').select('id, home_team, away_team, home_score, away_score, status, stage, match_date, went_to_penalties').in('stage', ['r32','r16','qf','sf','final']),
       supabase.from('participant_teams').select('teams(name), participants(name)'),
     ])
     const owners = {}
     ;(ownRes.data || []).forEach(r => { const t=r.teams?.name, p=r.participants?.name; if (t&&p) owners[t]=p })
     setOwnerByTeam(owners)
-    setMatches((mRes.data || []).filter(m => ['r32','r16','qf','sf','final'].includes(m.stage)))
+    setDbMatches(mRes.data || [])
     setLoading(false)
   }, [])
   useEffect(() => { load(); const t=setInterval(load, REFRESH_INTERVAL); return ()=>clearInterval(t) }, [load])
 
   if (loading) return <Spinner />
+
+  const isFinished = m => m && (m.status === 'FINISHED' || (m.home_score != null && m.away_score != null))
+  const fmtDate = d => d ? new Date(d).toLocaleDateString([], { month:'short', day:'numeric' }) : ''
+  const fmtTime = d => d ? new Date(d).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' }) : ''
+
+  // Match each R32 slot to a synced DB row by team pairing (order-independent, spelling-tolerant)
+  const r32Db = dbMatches.filter(m => m.stage === 'r32')
+  const findR32 = (slot) => r32Db.find(m => {
+    const set = new Set([norm(m.home_team), norm(m.away_team)])
+    return set.has(norm(slot.a)) && set.has(norm(slot.b))
+  })
+
+  // Build a slot map: number -> { home, away, homeScore, awayScore, finished, winner, date, penalties }
+  const slot = {}
+
+  // R32 from DB
+  for (const s of R32_SLOTS) {
+    const m = findR32(s)
+    if (m) {
+      const fin = isFinished(m)
+      const drawLike = fin && (m.home_score === m.away_score || m.went_to_penalties)
+      // winner: only decided by 120-min score when NOT a penalty tie; penalty ties have no bracket
+      // winner we can infer from goals, so we fall back to whoever the DB shows advancing later.
+      let winner = null
+      if (fin && !drawLike) winner = m.home_score > m.away_score ? m.home_team : m.away_team
+      slot[s.n] = { home:m.home_team, away:m.away_team, hs:m.home_score, as:m.away_score,
+        fin, winner, date:m.match_date, pens:m.went_to_penalties }
+    } else {
+      slot[s.n] = { home:s.a, away:s.b, hs:null, as:null, fin:false, winner:null, date:null, pens:false }
+    }
+  }
+
+  // Downstream rounds: try DB first (by team pairing once known), else derive teams from feeders' winners
+  const dbByStage = { r16:dbMatches.filter(m=>m.stage==='r16'), qf:dbMatches.filter(m=>m.stage==='qf'),
+                      sf:dbMatches.filter(m=>m.stage==='sf'), final:dbMatches.filter(m=>m.stage==='final') }
+  const stageOf = n => n<=88?'r32':n<=96?'r16':n<=100?'qf':n<=102?'sf':'final'
+
+  for (const n of [89,90,91,92,93,94,95,96,97,98,99,100,101,102,104]) {
+    const [f1, f2] = FEED[n]
+    const homeTeam = slot[f1]?.winner || null
+    const awayTeam = slot[f2]?.winner || null
+    // Try to find a synced DB row for this slot by matching known team(s)
+    const pool = dbByStage[stageOf(n)] || []
+    let m = null
+    if (homeTeam && awayTeam) {
+      m = pool.find(x => { const set=new Set([norm(x.home_team),norm(x.away_team)]); return set.has(norm(homeTeam))&&set.has(norm(awayTeam)) })
+    }
+    if (m) {
+      const fin = isFinished(m)
+      const drawLike = fin && (m.home_score === m.away_score || m.went_to_penalties)
+      let winner = null
+      if (fin && !drawLike) winner = m.home_score > m.away_score ? m.home_team : m.away_team
+      slot[n] = { home:m.home_team, away:m.away_team, hs:m.home_score, as:m.away_score, fin, winner, date:m.match_date, pens:m.went_to_penalties, feeders:[f1,f2] }
+    } else {
+      slot[n] = { home:homeTeam, away:awayTeam, hs:null, as:null, fin:false, winner:null, date:null, pens:false, feeders:[f1,f2] }
+    }
+  }
 
   const rounds = [
     { key:'r32', label:'Round of 32' },
@@ -602,43 +695,35 @@ function Bracket() {
     { key:'sf',  label:'Semi-finals' },
     { key:'final', label:'Final' },
   ]
-  const byRound = {}
-  rounds.forEach(r => { byRound[r.key] = matches.filter(m => m.stage === r.key).sort((a,b)=>a.id-b.id) })
 
-  const anyKO = rounds.some(r => byRound[r.key].length > 0)
-  if (!anyKO) return <EmptyState icon="🗺️" message="The knockout bracket will appear once Round of 32 fixtures are synced." />
-
-  const fmtDate = d => d ? new Date(d).toLocaleDateString([], { month:'short', day:'numeric' }) : ''
-  const fmtTime = d => d ? new Date(d).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' }) : ''
-  const isFinished = m => m.status === 'FINISHED' || (m.home_score != null && m.away_score != null)
-
-  const TeamRow = ({ name, score, won, owner }) => (
-    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'5px 9px',
+  const TeamRow = ({ name, feederN, score, won }) => (
+    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'4px 8px',
       background: won ? '#f0fdf4' : 'transparent', borderRadius:4 }}>
       <div style={{ minWidth:0 }}>
-        <div style={{ fontFamily:"'Outfit', sans-serif", fontSize:13, fontWeight:won?700:500,
-          color: name ? '#111827' : C.muted, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
-          {name || 'TBD'}
+        <div style={{ fontFamily:"'Outfit', sans-serif", fontSize:12.5, fontWeight:won?700:500,
+          color: name ? '#111827' : C.muted, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', maxWidth:120 }}>
+          {name || (feederN ? `Winner Match ${feederN}` : 'TBD')}
         </div>
-        {owner && <div style={{ fontFamily:"'Outfit', sans-serif", fontSize:10, color:C.green, fontWeight:600 }}>{owner}</div>}
+        {name && ownerByTeam[name] && <div style={{ fontFamily:"'Outfit', sans-serif", fontSize:9.5, color:C.green, fontWeight:600 }}>{ownerByTeam[name]}</div>}
       </div>
-      <span style={{ fontFamily:"'Barlow Condensed', sans-serif", fontWeight:700, fontSize:15,
-        color: score==null ? C.muted : '#111827', marginLeft:8 }}>{score==null ? '' : score}</span>
+      <span style={{ fontFamily:"'Barlow Condensed', sans-serif", fontWeight:700, fontSize:14,
+        color: score==null ? C.muted : '#111827', marginLeft:6 }}>{score==null ? '' : score}</span>
     </div>
   )
 
-  const MatchCard = ({ m }) => {
-    const fin = isFinished(m)
-    const homeWon = fin && m.home_score > m.away_score
-    const awayWon = fin && m.away_score > m.home_score
+  const SlotCard = ({ n }) => {
+    const s = slot[n]
+    const [f1, f2] = s.feeders || []
+    const homeWon = s.fin && !s.pens && s.hs > s.as
+    const awayWon = s.fin && !s.pens && s.as > s.hs
     return (
-      <div style={{ background:C.white, border:`1px solid ${C.border}`, borderRadius:8, padding:4,
-        width:170, boxShadow:'0 1px 2px rgba(0,0,0,0.05)' }}>
-        <TeamRow name={m.home_team} score={fin?m.home_score:null} won={homeWon} owner={ownerByTeam[m.home_team]} />
-        <div style={{ height:1, background:C.border, margin:'1px 9px' }} />
-        <TeamRow name={m.away_team} score={fin?m.away_score:null} won={awayWon} owner={ownerByTeam[m.away_team]} />
-        <div style={{ fontFamily:"'Outfit', sans-serif", fontSize:10, color:C.muted, textAlign:'center', padding:'4px 0 2px' }}>
-          {fin ? 'Full time' : m.match_date ? `${fmtDate(m.match_date)} · ${fmtTime(m.match_date)}` : 'TBD'}
+      <div style={{ background:C.white, border:`1px solid ${C.border}`, borderRadius:8, padding:3, width:158,
+        boxShadow:'0 1px 2px rgba(0,0,0,0.05)' }}>
+        <TeamRow name={s.home} feederN={f1} score={s.fin?s.hs:null} won={homeWon} />
+        <div style={{ height:1, background:C.border, margin:'1px 8px' }} />
+        <TeamRow name={s.away} feederN={f2} score={s.fin?s.as:null} won={awayWon} />
+        <div style={{ fontFamily:"'Outfit', sans-serif", fontSize:9.5, color:C.muted, textAlign:'center', padding:'3px 0 1px' }}>
+          {s.fin ? (s.pens ? 'Draw · won on pens' : 'Full time') : s.date ? `${fmtDate(s.date)} · ${fmtTime(s.date)}` : `Match ${n}`}
         </div>
       </div>
     )
@@ -647,22 +732,20 @@ function Bracket() {
   return (
     <div>
       <div style={{ fontFamily:"'Outfit', sans-serif", fontSize:12, color:C.muted, marginBottom:14 }}>
-        Scroll sideways to follow the bracket through to the final. Matchups fill in as each round is played.
+        The full road to the final. Scroll sideways — empty slots show which match feeds them, and fill in as winners advance.
       </div>
       <div style={{ overflowX:'auto', WebkitOverflowScrolling:'touch', paddingBottom:12 }}>
-        <div style={{ display:'flex', gap:20, minWidth:'min-content' }}>
+        <div style={{ display:'flex', gap:16, minWidth:'min-content' }}>
           {rounds.map(r => (
-            byRound[r.key].length > 0 && (
-              <div key={r.key} style={{ display:'flex', flexDirection:'column', flexShrink:0 }}>
-                <div style={{ fontFamily:"'Barlow Condensed', sans-serif", fontWeight:700, fontSize:13,
-                  textTransform:'uppercase', letterSpacing:'0.06em', color:C.muted, marginBottom:10, textAlign:'center' }}>
-                  {r.label}
-                </div>
-                <div style={{ display:'flex', flexDirection:'column', justifyContent:'space-around', gap:10, flex:1 }}>
-                  {byRound[r.key].map(m => <MatchCard key={m.id} m={m} />)}
-                </div>
+            <div key={r.key} style={{ display:'flex', flexDirection:'column', flexShrink:0 }}>
+              <div style={{ fontFamily:"'Barlow Condensed', sans-serif", fontWeight:700, fontSize:12.5,
+                textTransform:'uppercase', letterSpacing:'0.05em', color:C.muted, marginBottom:10, textAlign:'center' }}>
+                {r.label}
               </div>
-            )
+              <div style={{ display:'flex', flexDirection:'column', justifyContent:'space-around', gap:8, flex:1 }}>
+                {ROUND_SLOTS[r.key].map(n => <SlotCard key={n} n={n} />)}
+              </div>
+            </div>
           ))}
         </div>
       </div>
