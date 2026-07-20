@@ -212,6 +212,7 @@ function ScoringFAQ() {
           {row('Win (Quarter-final)', `${v('points_qf',8)} pts`)}
           {row('Win (Semi-final)', `${v('points_sf',13)} pts`)}
           {row('Win (Final)', `${v('points_final',20)} pts`)}
+          {row('Win (3rd-place playoff)', `${v('points_third',2)} pts`)}
           {row('Draw', `${v('points_draw',1)} pt`)}
           {row('Each goal your team scores', `${v('points_team_goal',1)} pt`)}
 

@@ -9,7 +9,7 @@ const STAGE_MAP = {
   LAST_32: 'r32', ROUND_OF_32: 'r32', R32: 'r32',
   LAST_16: 'r16', ROUND_OF_16: 'r16',
   QUARTER_FINALS: 'qf', SEMI_FINALS: 'sf',
-  FINAL: 'final', '3RD_PLACE_MATCH': 'final',
+  FINAL: 'final', '3RD_PLACE_MATCH': 'third',
 }
 function apiStageToGW(stage, matchday) {
   if (stage === 'GROUP_STAGE') return matchday || 1
@@ -793,6 +793,7 @@ function Scoring() {
         qf:        parseFloat(s.points_qf)         || 8,
         sf:        parseFloat(s.points_sf)         || 13,
         final:     parseFloat(s.points_final)      || 20,
+        third:     parseFloat(s.points_third)      || 2,
         goal:      parseFloat(s.points_goal)       || 4,
         draw:      parseFloat(s.points_draw)       || 1,
         team_goal: parseFloat(s.points_team_goal)  || 1,
@@ -874,7 +875,7 @@ function Scoring() {
           const poolPts = { A: 0, B: 0, C: 0 }
           const poolOf = (teamId) => { const o = myTeams.find(r => r.team_id === teamId); return o ? o.pool : null }
           for (const m of gwMatches) {
-            const stageMap = { group: pts.group_win, r32: pts.r32, r16: pts.r16, qf: pts.qf, sf: pts.sf, final: pts.final }
+            const stageMap = { group: pts.group_win, r32: pts.r32, r16: pts.r16, qf: pts.qf, sf: pts.sf, final: pts.final, third: pts.third }
             const stagePts = stageMap[m.stage] || pts.group_win
             const hs = m.home_score ?? 0
             const as = m.away_score ?? 0
@@ -1047,7 +1048,8 @@ function Settings() {
       {field('Round of 16', 'points_r16', 'number')}
       {field('Quarter-Final', 'points_qf', 'number')}
       {field('Semi-Final', 'points_sf', 'number')}
-      {field('Final / 3rd Place', 'points_final', 'number')}
+      {field('Final', 'points_final', 'number')}
+      {field('3rd Place Playoff', 'points_third', 'number')}
 
       <h3 style={sh3}>Other Scoring</h3>
       {field('Draw (per owned team)', 'points_draw', 'number')}
